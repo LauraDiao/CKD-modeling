@@ -10,17 +10,17 @@ from datetime import datetime
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Generate synthetic patient-day notes and embeddings using a transformer model."
+        description="Generate synthetic patient-day notes, map GFR to CKD stages, and generate embeddings using a transformer model."
     )
     parser.add_argument("--csv", type=str, default="patients_subset_10.csv",
                         help="Path to the main event CSV file.")
     parser.add_argument("--icd", type=str, default="icd_mapping.csv",
                         help="Path to the ICD mapping CSV file.")
-    parser.add_argument("--output_dir", type=str, default="merged_daily_embeddings",
+    parser.add_argument("--output_dir", type=str, default="ckd_embeddings",
                         help="Directory in which to save the generated embeddings and metadata.")
     parser.add_argument("--model_name", type=str, default="/home2/simlee/share/slee/GeneratEHR/clinicalBERT-emily",
                         help="Pretrained transformer model to use for embeddings.")
-    parser.add_argument("--embed_dim", type=int, default=128,
+    parser.add_argument("--embed_dim", type=int, default=768,
                         help="Dimension to which the model embedding should be truncated or padded.")
     parser.add_argument("--batch_size", type=int, default=16,
                         help="Batch size for encoding the synthetic notes.")
@@ -28,7 +28,7 @@ def parse_arguments():
 
 def load_data(csv_path, icd_path):
     print(f"[INFO] Loading patient events from: {csv_path}")
-    # low_memory=False suppresses mixed-type warnings; duplicate rows are removed.
+    # Set low_memory to False to suppress dtype warnings for mixed types.
     df = pd.read_csv(csv_path, low_memory=False)
     df = df.drop_duplicates()
     icd_df = pd.read_csv(icd_path)
@@ -44,7 +44,7 @@ def load_data(csv_path, icd_path):
     return df, icd_map
 
 def format_demographics(row):
-    # When grouping by PatientID without resetting index the PatientID is in row.name.
+    # When grouping by PatientID without resetting index, PatientID is in row.name.
     pid = row.name
     race_ethnicity = str(row["DataCategory"]).replace("//", " ").replace("/", " ")
     if "Unknown Not Reported" in race_ethnicity:
@@ -108,6 +108,60 @@ def generate_synthetic_notes(df, demographic_map, icd_map):
     print(f"[INFO] Generated {len(summary_df)} synthetic patient-day notes.")
     return summary_df
 
+def forward_fill_ckd_stage(summary_df):
+    """
+    For each patient, forward-fill the GFR values (sorted by date), and map them to CKD stages
+    based on the following thresholds:
+    
+        Stage 1: eGFR ≥ 90
+        Stage 2: 60 ≤ eGFR < 90
+        Stage 3a: 45 ≤ eGFR < 60
+        Stage 3b: 30 ≤ eGFR < 45
+        Stage 4: 15 ≤ eGFR < 30
+        Stage 5: eGFR < 15
+    
+    The stage is forced to be non-decreasing (i.e. if a new reading would lead to an improvement,
+    the previous worse stage is retained).
+    """
+    summary_df = summary_df.sort_values(by=["PatientID", "EventDate"]).copy()
+    # Convert GFR to numeric (if not already) and forward fill per patient.
+    summary_df["GFR"] = pd.to_numeric(summary_df["GFR"], errors="coerce")
+    summary_df["GFR"] = summary_df.groupby("PatientID")["GFR"].ffill()
+    
+    def gfr_to_stage(gfr):
+        if pd.isna(gfr):
+            return None, 0
+        if gfr >= 90:
+            return "1", 1
+        elif gfr >= 60:
+            return "2", 2
+        elif gfr >= 45:
+            return "3a", 3.1
+        elif gfr >= 30:
+            return "3b", 3.2
+        elif gfr >= 15:
+            return "4", 4
+        else:
+            return "5", 5
+
+    # For each patient, enforce non-decreasing (progressive) stage.
+    new_stages = {}
+    for pid, group in summary_df.groupby("PatientID"):
+        group = group.sort_values("EventDate")
+        max_stage_rank = 0
+        for idx, row in group.iterrows():
+            computed_stage, rank = gfr_to_stage(row["GFR"])
+            # If the computed stage is less severe than the worst seen so far, retain the worst.
+            if rank < max_stage_rank:
+                final_stage = new_stages.get(prev_idx, computed_stage)
+            else:
+                final_stage = computed_stage
+                max_stage_rank = rank
+            new_stages[idx] = final_stage
+            prev_idx = idx
+    summary_df["CKD_stage"] = summary_df.index.map(new_stages)
+    return summary_df
+
 def load_embedding_model(model_name, device):
     print(f"[INFO] Loading model from: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -143,7 +197,7 @@ def generate_and_save_embeddings(summary_df, tokenizer, model, device, embed_dim
         emb = get_cls_embeddings(batch_texts, tokenizer, model, device, embed_dim)
 
         for (pid, date), gfr_val, vec in zip(batch_ids, batch_gfrs, emb):
-            # Create a dedicated folder for the patient.
+            # Create a folder for the patient if it doesn't exist.
             patient_folder = os.path.join(output_dir, str(pid))
             os.makedirs(patient_folder, exist_ok=True)
 
@@ -151,10 +205,13 @@ def generate_and_save_embeddings(summary_df, tokenizer, model, device, embed_dim
             fname = f"{pid}_{date_str}.npz"
             fpath = os.path.join(patient_folder, fname)
             np.savez_compressed(fpath, cls_embedding=vec)
+            # Look up the CKD stage from the summary dataframe.
+            stage_val = summary_df[(summary_df['PatientID'] == pid) & (summary_df['EventDate'] == date)]['CKD_stage'].values[0]
             meta.append({
                 'PatientID': pid,
                 'EventDate': date,
                 'GFR': gfr_val,
+                'CKD_stage': stage_val,
                 'text': summary_df[(summary_df['PatientID'] == pid) & (summary_df['EventDate'] == date)]['text'].values[0],
                 'embedding_file': os.path.join(str(pid), fname)
             })
@@ -174,6 +231,8 @@ def main():
     print(demographic_map)
 
     summary_df = generate_synthetic_notes(df, demographic_map, icd_map)
+    # Forward-fill GFR values and compute CKD stage per patient
+    summary_df = forward_fill_ckd_stage(summary_df)
     print(summary_df.head())
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
