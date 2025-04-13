@@ -35,6 +35,42 @@ Each model is trained using early stopping and learning rate scheduling. Test pe
 bash run_modeling.sh
 ```
 
+### Metadata Format and Embedding Structure
+
+The script `embedding.py` produces a metadata CSV file named `patient_embedding_metadata.csv`. Each row in the file corresponds to a single patient-day pair and contains the following fields:
+
+```markdown
+| PatientID | EventDate  | GFR  | CKD_stage | text                                   | embedding_file            |
+|-----------|------------|------|------------|----------------------------------------|---------------------------|
+| Z1062220  | 2022-07-14 | 89.0 | 2          | ions: Ophthalmics - Misc.              | Z1062220_20220714.npz     |
+| Z1062220  | 2022-07-15 | 89.0 | 2          | Central Muscle Relaxants               | Z1062220_20220715.npz     |
+| Z1062220  | 2022-07-19 | 89.0 | 2          | uptake Inhibitors (SNRIs)              | Z1062220_20220719.npz     |
+| Z1062220  | 2022-07-20 | 89.0 | 2          | ions: Antiperistaltic Agents           | Z1062220_20220720.npz     |
+| Z1062220  | 2022-07-21 | 89.0 | 2          | ons: Antiperistaltic Agents            | Z1062220_20220721.npz     |
+| Z1062220  | 2022-07-25 | 89.0 | 2          | cations: Analgesics Other              | Z1062220_20220725.npz     |
+| Z1062220  | 2022-07-27 | 89.0 | 2          | counter: APPOINTMENT                   | Z1062220_20220727.npz     |
+| Z1062220  | 2022-08-01 | 89.0 | 2          | s: Penicillin Combinations             | Z1062220_20220801.npz     |
+| Z1062220  | 2022-08-03 | 89.0 | 2          | e - Labs: WBC  - Labs: K               | Z1062220_20220803.npz     |
+| Z1062220  | 2022-08-04 | 89.0 | 2          | 110.1T: Unknown condition              | Z1062220_20220804.npz     |
+| Z1062220  | 2022-08-10 | 89.0 | 2          | order, recurrent, moderate             | Z1062220_20220810.npz     |
+| Z1062220  | 2022-08-15 | 89.0 | 2          | ions: Oil Soluble Vitamins             | Z1062220_20220815.npz     |
+| Z1062220  | 2022-08-16 | 89.0 | 2          | ions: Antibiotics - Topical            | Z1062220_20220816.npz     |
+| Z1062220  | 2022-08-17 | 89.0 | 2          | ions: Ophthalmics - Misc.              | Z1062220_20220817.npz     |
+```
+
+Each embedding is stored in a compressed `.npz` file and follows the folder structure:
+```
+{output_dir}/{PatientID}/{PatientID}_{EventDate}.npz
+```
+For instance, embeddings for patient `Z1062220` would be located at:
+```
+ckd_embeddings_100/Z1062220/Z1062220_20220714.npz
+ckd_embeddings_100/Z1062220/Z1062220_20220715.npz
+...
+```
+
+This design allows efficient access of per-patient longitudinal embeddings for modeling.
+
 ---
 
 ### Shell Scripts
