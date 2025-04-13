@@ -75,3 +75,13 @@ python ckd_modeling.py \
 
 Make sure to `chmod +x run_embedding.sh run_modeling.sh` before executing the scripts.
 
+#### Acknowledgments
+
+This work utilized resources provided by the [UCLA Department of Computational Medicine](https://compmed.ucla.edu/).
+
+---
+
+For further inquiries or collaboration, please contact:
+- Simon A. Lee: [simonlee711@g.ucla.edu](mailto:simonlee711@g.ucla.edu)
+- Jeffrey N. Chiang: [njchiang@g.ucla.edu](mailto:njchiang@g.ucla.edu)
+
