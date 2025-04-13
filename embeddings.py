@@ -12,17 +12,17 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Generate synthetic patient-day notes, map GFR to CKD stages, and generate embeddings using a transformer model."
     )
-    parser.add_argument("--csv", type=str, default="patients_subset_10.csv",
+    parser.add_argument("--csv", type=str, default="patients_subset_100.csv",
                         help="Path to the main event CSV file.")
     parser.add_argument("--icd", type=str, default="icd_mapping.csv",
                         help="Path to the ICD mapping CSV file.")
-    parser.add_argument("--output_dir", type=str, default="ckd_embeddings",
+    parser.add_argument("--output_dir", type=str, default="ckd_embeddings_100",
                         help="Directory in which to save the generated embeddings and metadata.")
     parser.add_argument("--model_name", type=str, default="/home2/simlee/share/slee/GeneratEHR/clinicalBERT-emily",
                         help="Pretrained transformer model to use for embeddings.")
     parser.add_argument("--embed_dim", type=int, default=768,
                         help="Dimension to which the model embedding should be truncated or padded.")
-    parser.add_argument("--batch_size", type=int, default=16,
+    parser.add_argument("--batch_size", type=int, default=128,
                         help="Batch size for encoding the synthetic notes.")
     return parser.parse_args()
 
@@ -235,7 +235,7 @@ def main():
     summary_df = forward_fill_ckd_stage(summary_df)
     print(summary_df.head())
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
     tokenizer, model = load_embedding_model(args.model_name, device)
     generate_and_save_embeddings(summary_df, tokenizer, model, device,
                                  args.embed_dim, args.batch_size, args.output_dir)
