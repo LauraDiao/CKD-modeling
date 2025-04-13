@@ -1,77 +1,77 @@
-# CKD Progression Prediction
+# CKD Progression Modeling
 
-This repository contains a PyTorch-based framework for modeling longitudinal progression of **Chronic Kidney Disease (CKD)** using visit-level embedding sequences. The primary task is to forecast whether a patient will progress to **stage 4 or higher** CKD at the *next clinical encounter*, based on a fixed-size window of prior visits.
-
-The current implementation uses a gated recurrent unit (GRU) architecture trained on time-ordered sequences of pretrained patient visit embeddings.
+This repository provides a full pipeline for simulating longitudinal patient-note data, extracting contextual embeddings from clinical notes, and training various deep learning architectures to predict chronic kidney disease (CKD) progression. The pipeline consists of two main scripts:
 
 ---
 
-### 🧠 Model Overview
+### `embedding.py`: Pseudonote (tabular to text) Generation + Embedding Extraction
 
-The core model is a GRU-based sequence classifier. Given a sequence of embedding vectors \( \mathbf{x}_1, \dots, \mathbf{x}_T \in \mathbb{R}^{768} \) representing patient visits, the GRU updates a hidden state \( \mathbf{h}_t \in \mathbb{R}^{128} \) over time via the standard update and reset gate mechanism:
+This script reads tabular event data and ICD mappings to generate synthetic, per-patient, per-day clinical notes. These notes are constructed by integrating demographic attributes, diagnoses (ICD-10 codes), medications, and procedures. The script maps GFR readings to CKD stages (1--5) using forward-filled values while enforcing monotonic progression. The resulting notes are encoded into dense representations (CLS embeddings) using a pretrained transformer model (e.g., ClinicalBERT).
 
-\[
-\begin{aligned}
-\mathbf{z}_t &= \sigma(\mathbf{W}_z \mathbf{x}_t + \mathbf{U}_z \mathbf{h}_{t-1} + \mathbf{b}_z) \\
-\mathbf{r}_t &= \sigma(\mathbf{W}_r \mathbf{x}_t + \mathbf{U}_r \mathbf{h}_{t-1} + \mathbf{b}_r) \\
-\tilde{\mathbf{h}}_t &= \tanh(\mathbf{W}_h \mathbf{x}_t + \mathbf{U}_h (\mathbf{r}_t \odot \mathbf{h}_{t-1}) + \mathbf{b}_h) \\
-\mathbf{h}_t &= (1 - \mathbf{z}_t) \odot \mathbf{h}_{t-1} + \mathbf{z}_t \odot \tilde{\mathbf{h}}_t
-\end{aligned}
-\]
+Each embedding is stored in a per-patient directory with corresponding metadata (GFR, CKD stage, text). Metadata is saved to a CSV file for downstream modeling.
 
-The final hidden state \( \mathbf{h}_T \) is then passed through a linear classifier to produce binary logits, which are interpreted as the probability of CKD progression at the next timepoint.
-
----
-
-### ✅ Prediction Setup
-
-This framework implements a realistic and clinically sound longitudinal prediction strategy:
-
-- **Supervision Target**: CKD labels are binarized (`stage ≥ 4 → 1`) and shifted *forward in time* to define the next-visit prediction target.
-  
-- **Temporal Supervision**: For each patient, we construct sequences of embeddings using a sliding window approach. Each input sequence spans up to `T = 5` prior visits, and the label is the CKD state at the next visit.
-
-- **Padding**: Sequences with fewer than `T` historical visits are left-padded with zero vectors, maintaining consistent input dimensionality while preserving visit chronology.
-
-- **Patient-level Split**: To prevent information leakage, train/val/test splits are performed at the **patient level**, not the visit level.
-
-- **Pretrained Visit Embeddings**: The model operates directly on fixed-size visit-level embeddings (e.g., obtained via BERT or other foundation models). This allows us to focus on modeling **temporal dynamics** rather than language understanding.
-
----
-
-### 📈 What the GRU Learns
-
-The model approximates a latent dynamical system that encodes the evolution of disease state. If we treat the GRU as learning a transition function \( f_\theta \), we get:
-
-\[
-\mathbf{h}_t = f_\theta(\mathbf{h}_{t-1}, \mathbf{x}_t)
-\]
-
-which implicitly captures temporal dependencies in clinical trajectory, including trends, abrupt changes, and the momentum of decline. This is especially powerful in the CKD setting, where disease evolution is nonlinear and temporally irregular.
-
-From a systems perspective, the RNN is approximating a partially observable Markov decision process (POMDP), where visits are observations and hidden health status is propagated over time through its learned hidden states.
-
----
-
-### 🚀 Getting Started
-
-Clone the repo and run the training script with:
-
+**Usage:**
 ```bash
-python train_ckd_model.py \
-    --embedding-root ./ckd_embeddings_100 \
-    --metadata-file patient_embedding_metadata.csv
+bash run_embedding.sh
 ```
 
-You can modify model hyperparameters, data paths, and training settings via the CLI.
+---
+
+### `ckd_modeling.py`: Longitudinal CKD Classification Models
+
+This script reads the embeddings and associated metadata and builds sequences of patient-note embeddings. The task is to predict whether the patient will progress to stage 4 or higher CKD at the next time step. Labels are derived from cleaned CKD stages, converted into a binary label indicating whether stage 4+ is reached.
+
+It supports training and evaluation of the following sequence models:
+- RNN and LSTM with optional bidirectionality
+- Transformer encoder with positional encoding
+- MLP over flattened embedding windows
+- Temporal Convolutional Network (TCN)
+- Neural ODE (if `torchdiffeq` is installed)
+
+Each model is trained using early stopping and learning rate scheduling. Test performance includes Accuracy, F1, Precision, Recall, AUROC, and AUPRC. An optional label-switch analysis tracks whether models anticipate CKD progression earlier than the ground truth.
+
+**Usage:**
+```bash
+bash run_modeling.sh
+```
 
 ---
 
-### 📂 Files
+### Shell Scripts
 
-- `train_ckd_model.py`: End-to-end training and evaluation script.
-- `CKDSequenceDataset`: Custom `torch.utils.data.Dataset` for loading padded sequences.
-- `LongitudinalRNN`: GRU-based PyTorch model for sequence classification.
+**`run_embedding.sh`**
+```bash
+#!/bin/bash
+python embedding.py \
+  --csv patients_subset_100.csv \
+  --icd icd_mapping.csv \
+  --output_dir ckd_embeddings_100 \
+  --model_name /home2/simlee/share/slee/GeneratEHR/clinicalBERT-emily \
+  --embed_dim 768 \
+  --batch_size 128
+```
 
----
+**`run_modeling.sh`**
+```bash
+#!/bin/bash
+python ckd_modeling.py \
+  --embedding-root ckd_embeddings_100 \
+  --window-size 10 \
+  --embed-dim 768 \
+  --epochs 50 \
+  --batch-size 64 \
+  --lr 5e-3 \
+  --patience 5 \
+  --scheduler-patience 2 \
+  --metadata-file patient_embedding_metadata.csv \
+  --hidden-dim 128 \
+  --num-layers 2 \
+  --rnn-dropout 0.2 \
+  --rnn-bidir \
+  --transformer-nhead 4 \
+  --transformer-dim-feedforward 256 \
+  --transformer-dropout 0.2
+```
+
+Make sure to `chmod +x run_embedding.sh run_modeling.sh` before executing the scripts.
 
