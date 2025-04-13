@@ -48,10 +48,10 @@ def parse_args():
     parser.add_argument("--scheduler-patience", type=int, default=2, help="Patience for scheduler LR reduction.")
     parser.add_argument("--metadata-file", type=str, default="patient_embedding_metadata.csv", help="CSV with metadata.")
     parser.add_argument("--random-seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--hidden-dim", type=int, default=128, help="Hidden dimension for RNN/ODE/TCN.")
-    parser.add_argument("--num-layers", type=int, default=2, help="Layers for RNN/Transformer/TCN/ODE MLP block.")
+    parser.add_argument("--hidden-dim", type=int, default=128, help="Hidden dimension for RNN/LSTM/ODE/TCN.")
+    parser.add_argument("--num-layers", type=int, default=2, help="Layers for RNN/LSTM/Transformer/TCN/ODE MLP block.")
     parser.add_argument("--rnn-dropout", type=float, default=0.1, help="Dropout in RNN.")
-    parser.add_argument("--rnn-bidir", action="store_true", help="Use bidirectional RNN if set.")
+    parser.add_argument("--rnn-bidir", action="store_true", help="Use bidirectional RNN/LSTM if set.")
     parser.add_argument("--transformer-nhead", type=int, default=4, help="Heads in Transformer encoder.")
     parser.add_argument("--transformer-dim-feedforward", type=int, default=256, help="Transformer feedforward dim.")
     parser.add_argument("--transformer-dropout", type=float, default=0.1, help="Dropout in Transformer layers.")
@@ -145,6 +145,30 @@ class LongitudinalRNN(nn.Module):
         top_layer = top_layer.transpose(0, 1).contiguous().view(x.size(0), -1)
         return self.classifier(top_layer)
 
+class LongitudinalLSTM(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers, dropout=0.1, bidirectional=False):
+        super().__init__()
+        self.bidirectional = bidirectional
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        self.num_directions = 2 if bidirectional else 1
+        self.lstm = nn.LSTM(
+            input_dim,
+            hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=(dropout if num_layers > 1 else 0.0),
+            bidirectional=bidirectional
+        )
+        self.classifier = nn.Linear(hidden_dim * self.num_directions, 2)
+
+    def forward(self, x):
+        _, (h_n, _) = self.lstm(x)
+        h_n = h_n.view(self.num_layers, self.num_directions, x.size(0), self.hidden_dim)
+        top_layer = h_n[-1]
+        top_layer = top_layer.transpose(0, 1).contiguous().view(x.size(0), -1)
+        return self.classifier(top_layer)
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000):
         super().__init__()
@@ -207,7 +231,6 @@ class TemporalBlock(nn.Module):
         self.bn1 = nn.BatchNorm1d(out_channels)
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
-
         self.conv2 = nn.Conv1d(
             out_channels, out_channels, kernel_size,
             stride=stride, padding=padding, dilation=dilation
@@ -215,7 +238,6 @@ class TemporalBlock(nn.Module):
         self.bn2 = nn.BatchNorm1d(out_channels)
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
-
         self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
 
     def forward(self, x):
@@ -225,7 +247,6 @@ class TemporalBlock(nn.Module):
         out = self.dropout1(out)
         out = self.conv2(out)
         out = self.bn2(out)
-        # Slice the output so it matches x's length for the residual connection
         out = out[:, :, :x.size(2)]
         if self.downsample is not None:
             x = self.downsample(x)
@@ -242,7 +263,6 @@ class TCN(nn.Module):
         for i in range(num_layers):
             out_channels = hidden_dim
             dilation_size = 2**i
-            # For causal TCN, we keep padding = (kernel_size - 1)*dilation_size, then slice
             padding = (kernel_size - 1) * dilation_size
             block = TemporalBlock(
                 in_channels, out_channels, kernel_size=kernel_size,
@@ -259,7 +279,6 @@ class TCN(nn.Module):
         last_time = out[:, :, -1]
         return self.classifier(last_time)
 
-# Minimal neural ODE definition for demonstration
 class ODEFunc(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -284,17 +303,11 @@ class NeuralODEModel(nn.Module):
     def forward(self, x):
         if not TORCHDIFFEQ_AVAILABLE:
             raise ImportError("torchdiffeq is not installed. Please install it or remove the Neural ODE model.")
-        # x is (batch_size, seq_len, embed_dim)
-        # We'll combine time steps by taking the last hidden state
-        # but you can integrate more cleverly if desired
         batch_size = x.size(0)
-        seq_len = x.size(1)
         x_last = x[:, -1, :]
         z0 = self.encoder(x_last)
         t_span = torch.tensor([0, 1], dtype=torch.float).to(x.device)
-        # Integrate from t=0 to t=1
         zt = odeint(self.odefunc, z0, t_span)
-        # zt has shape (2, batch_size, hidden_dim). We'll take the final time
         z_final = zt[-1]
         return self.classifier(z_final)
 
@@ -439,6 +452,13 @@ def main():
         dropout=args.rnn_dropout,
         bidirectional=args.rnn_bidir
     )
+    improved_lstm = LongitudinalLSTM(
+        input_dim=args.embed_dim,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        dropout=args.rnn_dropout,
+        bidirectional=args.rnn_bidir
+    )
     improved_transformer = LongitudinalTransformer(
         input_dim=args.embed_dim,
         num_layers=args.num_layers,
@@ -460,13 +480,13 @@ def main():
         kernel_size=3,
         dropout=args.rnn_dropout
     )
-    # Minimal instantiation of our Neural ODE model
     ode_model = NeuralODEModel(
         input_dim=args.embed_dim,
         hidden_dim=args.hidden_dim
     )
-    logger.info("Training the RNN, Transformer, MLP, TCN, and Neural ODE models.")
+    logger.info("Training the RNN, LSTM, Transformer, MLP, TCN, and Neural ODE models.")
     rnn_results = train_and_evaluate(improved_rnn, device, train_loader, val_loader, test_loader, args, model_name="ImprovedRNN")
+    lstm_results = train_and_evaluate(improved_lstm, device, train_loader, val_loader, test_loader, args, model_name="ImprovedLSTM")
     transformer_results = train_and_evaluate(improved_transformer, device, train_loader, val_loader, test_loader, args, model_name="ImprovedTransformer")
     mlp_results = train_and_evaluate(mlp_model, device, train_loader, val_loader, test_loader, args, model_name="MLP")
     tcn_results = train_and_evaluate(tcn_model, device, train_loader, val_loader, test_loader, args, model_name="TCN")
@@ -476,7 +496,7 @@ def main():
         logger.info("torchdiffeq not installed, skipping Neural ODE training.")
         ode_results = None
     logger.info("All trainings complete. Summary of final test metrics follows.")
-    all_results = [rnn_results, transformer_results, mlp_results, tcn_results, ode_results]
+    all_results = [rnn_results, lstm_results, transformer_results, mlp_results, tcn_results, ode_results]
     for result in all_results:
         if result is None:
             continue
