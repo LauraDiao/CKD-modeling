@@ -18,7 +18,6 @@ from sklearn.metrics import (
     precision_recall_fscore_support
 )
 
-# If you do not have torchdiffeq, install or remove these lines accordingly
 try:
     from torchdiffeq import odeint
     TORCHDIFFEQ_AVAILABLE = True
@@ -30,7 +29,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler("training.log", mode='w'),
+        logging.FileHandler("training_lr3.log", mode='w'),
         logging.StreamHandler()
     ]
 )
@@ -39,22 +38,22 @@ logger = logging.getLogger(__name__)
 def parse_args():
     parser = argparse.ArgumentParser(description="Train multiple longitudinal models for CKD classification, including RNN, LSTM, Transformer, MLP, TCN, and Neural ODE, with label-switch analysis.")
     parser.add_argument("--embedding-root", type=str, default="./ckd_embeddings_100", help="Path to embeddings.")
-    parser.add_argument("--window-size", type=int, default=5, help="Sequence window size.")
+    parser.add_argument("--window-size", type=int, default=10, help="Sequence window size.")
     parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of embeddings.")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per model.")
-    parser.add_argument("--batch-size", type=int, default=16, help="Batch size.")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
+    parser.add_argument("--batch-size", type=int, default=64, help="Batch size.")
+    parser.add_argument("--lr", type=float, default=5e-3, help="Learning rate.")
     parser.add_argument("--patience", type=int, default=5, help="Early stopping patience.")
     parser.add_argument("--scheduler-patience", type=int, default=2, help="Patience for scheduler LR reduction.")
     parser.add_argument("--metadata-file", type=str, default="patient_embedding_metadata.csv", help="CSV with metadata.")
     parser.add_argument("--random-seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--hidden-dim", type=int, default=128, help="Hidden dimension for RNN/LSTM/ODE/TCN.")
     parser.add_argument("--num-layers", type=int, default=2, help="Layers for RNN/LSTM/Transformer/TCN/ODE MLP block.")
-    parser.add_argument("--rnn-dropout", type=float, default=0.1, help="Dropout in RNN/LSTM.")
+    parser.add_argument("--rnn-dropout", type=float, default=0.2, help="Dropout in RNN/LSTM.")
     parser.add_argument("--rnn-bidir", action="store_true", help="Use bidirectional RNN/LSTM if set.")
     parser.add_argument("--transformer-nhead", type=int, default=4, help="Heads in Transformer encoder.")
     parser.add_argument("--transformer-dim-feedforward", type=int, default=256, help="Transformer feedforward dim.")
-    parser.add_argument("--transformer-dropout", type=float, default=0.1, help="Dropout in Transformer layers.")
+    parser.add_argument("--transformer-dropout", type=float, default=0.2, help="Dropout in Transformer layers.")
     parser.add_argument("--max-patients", type=int, default=None, help="If set, only load embeddings for up to this many patients (for debugging).")
     parser.add_argument("--output-model-prefix", type=str, default="best_model", help="Filename prefix for saved models.")
     return parser.parse_args()
@@ -88,7 +87,7 @@ def monotonic_labels(labels):
     return monotonic
 
 def build_sequences(meta, window_size):
-    # This returns a list of (context_embeddings, label, patient_id, local_index_in_seq)
+    # Returns a list of (context_embeddings, label, patient_id, local_index_in_seq).
     sequence_data = []
     for pid, group in meta.groupby("PatientID"):
         group = group.sort_values(by="EventDate")
@@ -99,7 +98,6 @@ def build_sequences(meta, window_size):
             start_idx = max(0, i - window_size)
             context = embeddings[start_idx:i]
             target = labels[i - 1]
-            # local_index can be i - 1 because that's the "step" whose label is 'target'
             sequence_data.append((context, target, pid, i - 1))
     return sequence_data
 
@@ -238,6 +236,7 @@ class TemporalBlock(nn.Module):
         self.bn1 = nn.BatchNorm1d(out_channels)
         self.relu1 = nn.ReLU()
         self.dropout1 = nn.Dropout(dropout)
+
         self.conv2 = nn.Conv1d(
             out_channels, out_channels, kernel_size,
             stride=stride, padding=padding, dilation=dilation
@@ -245,6 +244,7 @@ class TemporalBlock(nn.Module):
         self.bn2 = nn.BatchNorm1d(out_channels)
         self.relu2 = nn.ReLU()
         self.dropout2 = nn.Dropout(dropout)
+
         self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
 
     def forward(self, x):
@@ -311,7 +311,6 @@ class NeuralODEModel(nn.Module):
     def forward(self, x):
         if not TORCHDIFFEQ_AVAILABLE:
             raise ImportError("torchdiffeq is not installed. Please install it or remove the Neural ODE model.")
-        # We take the last time step's embedding
         batch_size = x.size(0)
         x_last = x[:, -1, :]
         z0 = self.encoder(x_last)
@@ -399,7 +398,6 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     logger.info(f"{model_name} Test AUROC: {auroc:.4f}")
     logger.info(f"{model_name} Test AUPRC: {auprc:.4f}")
     logger.info(f"{model_name} training complete.")
-
     return {
         "model_name": model_name,
         "accuracy": accuracy,
@@ -443,8 +441,15 @@ def analyze_switches(df):
 
 def main():
     args = parse_args()
+
+    # Log the configuration parameters at the start
+    logger.info("Running with the following configuration:")
+    for key, val in vars(args).items():
+        logger.info(f"{key}: {val}")
+
     np.random.seed(args.random_seed)
     torch.manual_seed(args.random_seed)
+
     logger.info("Loading metadata.")
     metadata_path = os.path.join(args.embedding_root, args.metadata_file)
     metadata = pd.read_csv(metadata_path)
@@ -457,8 +462,10 @@ def main():
     metadata['next_label'] = metadata.groupby('PatientID')['label'].shift(-1)
     metadata = metadata.dropna(subset=['next_label'])
     metadata['next_label'] = metadata['next_label'].astype(int)
+
     logger.info("Filtering valid embedding rows.")
     metadata = metadata[metadata.apply(lambda row: embedding_exists(row, args.embedding_root), axis=1)]
+
     unique_patients = sorted(metadata['PatientID'].unique())
     if args.max_patients is not None and args.max_patients < len(unique_patients):
         subset_patients = unique_patients[: args.max_patients]
@@ -472,24 +479,31 @@ def main():
 
     logger.info("Loading embeddings.")
     metadata['embedding'] = metadata.apply(load_embedding_for_row, axis=1)
+
     logger.info("Creating train/val/test splits.")
     unique_patients = metadata['PatientID'].unique()
     train_patients, test_patients = train_test_split(unique_patients, test_size=0.2, random_state=args.random_seed)
     train_patients, val_patients = train_test_split(train_patients, test_size=0.1, random_state=args.random_seed)
+
     train_metadata = metadata[metadata['PatientID'].isin(train_patients)]
     val_metadata = metadata[metadata['PatientID'].isin(val_patients)]
     test_metadata = metadata[metadata['PatientID'].isin(test_patients)]
+
     logger.info("Building sequence datasets with monotonic progression constraints.")
     train_sequences = build_sequences(train_metadata, args.window_size)
     val_sequences = build_sequences(val_metadata, args.window_size)
     test_sequences = build_sequences(test_metadata, args.window_size)
+
     train_dataset = CKDSequenceDataset(train_sequences, args.window_size, args.embed_dim)
     val_dataset = CKDSequenceDataset(val_sequences, args.window_size, args.embed_dim)
     test_dataset = CKDSequenceDataset(test_sequences, args.window_size, args.embed_dim)
+
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+
     logger.info("Defining our models.")
     improved_rnn = LongitudinalRNN(
         input_dim=args.embed_dim,
@@ -530,17 +544,20 @@ def main():
         input_dim=args.embed_dim,
         hidden_dim=args.hidden_dim
     )
+
     logger.info("Training the RNN, LSTM, Transformer, MLP, TCN, and Neural ODE models.")
     rnn_results = train_and_evaluate(improved_rnn, device, train_loader, val_loader, test_loader, args, model_name="ImprovedRNN")
     lstm_results = train_and_evaluate(improved_lstm, device, train_loader, val_loader, test_loader, args, model_name="ImprovedLSTM")
     transformer_results = train_and_evaluate(improved_transformer, device, train_loader, val_loader, test_loader, args, model_name="ImprovedTransformer")
     mlp_results = train_and_evaluate(mlp_model, device, train_loader, val_loader, test_loader, args, model_name="MLP")
     tcn_results = train_and_evaluate(tcn_model, device, train_loader, val_loader, test_loader, args, model_name="TCN")
+
     if TORCHDIFFEQ_AVAILABLE:
         ode_results = train_and_evaluate(ode_model, device, train_loader, val_loader, test_loader, args, model_name="NeuralODE")
     else:
         logger.info("torchdiffeq not installed, skipping Neural ODE training.")
         ode_results = None
+
     logger.info("All trainings complete. Summary of final test metrics follows.")
     all_results = [rnn_results, lstm_results, transformer_results, mlp_results, tcn_results, ode_results]
     for result in all_results:
@@ -556,8 +573,6 @@ def main():
             f"AUPRC={result['auprc']:.4f}"
         )
 
-    # Now demonstrate how to analyze label switch detection for each model
-    # We'll do it on the test dataset, which has the same data loader for all models
     logger.info("Analyzing label switches for the trained models on the test set.")
     models = [
         ("ImprovedRNN", improved_rnn),
