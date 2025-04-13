@@ -37,7 +37,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train multiple longitudinal models for CKD classification with improvements, including a Neural ODE, with optional partial data loading.")
+    parser = argparse.ArgumentParser(description="Train multiple longitudinal models for CKD classification, including RNN, LSTM, Transformer, MLP, TCN, and Neural ODE, with label-switch analysis.")
     parser.add_argument("--embedding-root", type=str, default="./ckd_embeddings_100", help="Path to embeddings.")
     parser.add_argument("--window-size", type=int, default=5, help="Sequence window size.")
     parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of embeddings.")
@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument("--random-seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--hidden-dim", type=int, default=128, help="Hidden dimension for RNN/LSTM/ODE/TCN.")
     parser.add_argument("--num-layers", type=int, default=2, help="Layers for RNN/LSTM/Transformer/TCN/ODE MLP block.")
-    parser.add_argument("--rnn-dropout", type=float, default=0.1, help="Dropout in RNN.")
+    parser.add_argument("--rnn-dropout", type=float, default=0.1, help="Dropout in RNN/LSTM.")
     parser.add_argument("--rnn-bidir", action="store_true", help="Use bidirectional RNN/LSTM if set.")
     parser.add_argument("--transformer-nhead", type=int, default=4, help="Heads in Transformer encoder.")
     parser.add_argument("--transformer-dim-feedforward", type=int, default=256, help="Transformer feedforward dim.")
@@ -88,6 +88,7 @@ def monotonic_labels(labels):
     return monotonic
 
 def build_sequences(meta, window_size):
+    # This returns a list of (context_embeddings, label, patient_id, local_index_in_seq)
     sequence_data = []
     for pid, group in meta.groupby("PatientID"):
         group = group.sort_values(by="EventDate")
@@ -98,7 +99,8 @@ def build_sequences(meta, window_size):
             start_idx = max(0, i - window_size)
             context = embeddings[start_idx:i]
             target = labels[i - 1]
-            sequence_data.append((context, target))
+            # local_index can be i - 1 because that's the "step" whose label is 'target'
+            sequence_data.append((context, target, pid, i - 1))
     return sequence_data
 
 def pad_sequence(seq, length, dim):
@@ -117,9 +119,14 @@ class CKDSequenceDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        context, label = self.data[idx]
+        context, label, pid, local_idx = self.data[idx]
         context_padded = pad_sequence(context, self.window_size, self.embed_dim)
-        return torch.tensor(context_padded, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
+        return (
+            torch.tensor(context_padded, dtype=torch.float32),
+            torch.tensor(label, dtype=torch.long),
+            pid,
+            local_idx
+        )
 
 class LongitudinalRNN(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers, dropout=0.1, bidirectional=False):
@@ -247,6 +254,7 @@ class TemporalBlock(nn.Module):
         out = self.dropout1(out)
         out = self.conv2(out)
         out = self.bn2(out)
+        # Slice the output so it matches x's length for the residual connection
         out = out[:, :, :x.size(2)]
         if self.downsample is not None:
             x = self.downsample(x)
@@ -303,6 +311,7 @@ class NeuralODEModel(nn.Module):
     def forward(self, x):
         if not TORCHDIFFEQ_AVAILABLE:
             raise ImportError("torchdiffeq is not installed. Please install it or remove the Neural ODE model.")
+        # We take the last time step's embedding
         batch_size = x.size(0)
         x_last = x[:, -1, :]
         z0 = self.encoder(x_last)
@@ -324,7 +333,8 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     for epoch in range(args.epochs):
         model.train()
         train_losses = []
-        for x_batch, y_batch in train_loader:
+        for batch in train_loader:
+            x_batch, y_batch, _, _ = batch
             x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
             optimizer.zero_grad()
@@ -338,7 +348,8 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         model.eval()
         val_losses = []
         with torch.no_grad():
-            for x_batch, y_batch in val_loader:
+            for batch in val_loader:
+                x_batch, y_batch, _, _ = batch
                 x_batch = x_batch.to(device)
                 y_batch = y_batch.to(device)
                 logits = model(x_batch)
@@ -366,7 +377,8 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     model.eval()
     all_preds, all_probs, all_labels = [], [], []
     with torch.no_grad():
-        for x_batch, y_batch in test_loader:
+        for batch in test_loader:
+            x_batch, y_batch, _, _ = batch
             x_batch = x_batch.to(device)
             logits = model(x_batch)
             probs = nn.Softmax(dim=1)(logits)
@@ -387,6 +399,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     logger.info(f"{model_name} Test AUROC: {auroc:.4f}")
     logger.info(f"{model_name} Test AUPRC: {auprc:.4f}")
     logger.info(f"{model_name} training complete.")
+
     return {
         "model_name": model_name,
         "accuracy": accuracy,
@@ -396,6 +409,37 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         "auroc": auroc,
         "auprc": auprc
     }
+
+def predict_label_switches(model, loader, device):
+    model.eval()
+    records = []
+    with torch.no_grad():
+        for batch in loader:
+            x_batch, y_batch, pid_batch, idx_batch = batch
+            x_batch = x_batch.to(device)
+            logits = model(x_batch)
+            probs = nn.Softmax(dim=1)(logits)
+            preds = torch.argmax(probs, dim=1).cpu().numpy()
+            for pid, true_label, pred_label, local_idx in zip(pid_batch, y_batch.numpy(), preds, idx_batch.numpy()):
+                records.append((pid, local_idx, true_label, pred_label))
+    df = pd.DataFrame(records, columns=["PatientID", "LocalIndex", "TrueLabel", "PredLabel"])
+    return df
+
+def analyze_switches(df):
+    # Group by PatientID, find the first time the true label is 1, the first time the model predicted 1
+    analysis = []
+    for pid, group in df.groupby("PatientID"):
+        group = group.sort_values("LocalIndex").reset_index(drop=True)
+        true_switch = group[group["TrueLabel"] == 1]["LocalIndex"].min()
+        pred_switch = group[group["PredLabel"] == 1]["LocalIndex"].min()
+        analysis.append({
+            "PatientID": pid,
+            "TrueSwitchIdx": true_switch if pd.notnull(true_switch) else None,
+            "PredSwitchIdx": pred_switch if pd.notnull(pred_switch) else None
+        })
+    analysis_df = pd.DataFrame(analysis)
+    analysis_df["SwitchDifference"] = analysis_df["PredSwitchIdx"] - analysis_df["TrueSwitchIdx"]
+    return analysis_df
 
 def main():
     args = parse_args()
@@ -420,10 +464,12 @@ def main():
         subset_patients = unique_patients[: args.max_patients]
         metadata = metadata[metadata['PatientID'].isin(subset_patients)]
         logger.info(f"Using only {args.max_patients} patients for debugging.")
+
     embedding_cache = {}
     def load_embedding_for_row(row):
         path = os.path.join(args.embedding_root, row['embedding_file'])
         return load_embedding(path, embedding_cache)
+
     logger.info("Loading embeddings.")
     metadata['embedding'] = metadata.apply(load_embedding_for_row, axis=1)
     logger.info("Creating train/val/test splits.")
@@ -509,6 +555,25 @@ def main():
             f"AUROC={result['auroc']:.4f} "
             f"AUPRC={result['auprc']:.4f}"
         )
+
+    # Now demonstrate how to analyze label switch detection for each model
+    # We'll do it on the test dataset, which has the same data loader for all models
+    logger.info("Analyzing label switches for the trained models on the test set.")
+    models = [
+        ("ImprovedRNN", improved_rnn),
+        ("ImprovedLSTM", improved_lstm),
+        ("ImprovedTransformer", improved_transformer),
+        ("MLP", mlp_model),
+        ("TCN", tcn_model)
+    ]
+    if ode_results is not None:
+        models.append(("NeuralODE", ode_model))
+
+    for name, model_obj in models:
+        df_preds = predict_label_switches(model_obj, test_loader, device)
+        df_analysis = analyze_switches(df_preds)
+        logger.info(f"Label-switch analysis for {name}:")
+        logger.info(f"\n{df_analysis.head(10)}\n(Showing up to 10 rows)")
 
 if __name__ == "__main__":
     main()
