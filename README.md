@@ -6,24 +6,24 @@ This script sets up a valid and coherent framework for longitudinal classificati
 
 ### **What the RNN is doing**
 
-The core model is a `GRU`, which is a gated recurrent unit. This means that for each timestep \( t \), the GRU takes in an embedding vector \( \mathbf{x}_t \in \mathbb{R}^{768} \) and updates a hidden state \( \mathbf{h}_t \in \mathbb{R}^{128} \) according to gating functions that balance how much new input is incorporated and how much old state is retained. Formally, each timestep executes something like:
+The core model is a `GRU`, which is a gated recurrent unit. This means that for each timestep $ t $, the GRU takes in an embedding vector $ \mathbf{x}_t \in \mathbb{R}^{768} $ and updates a hidden state $ \mathbf{h}_t \in \mathbb{R}^{128} $ according to gating functions that balance how much new input is incorporated and how much old state is retained. Formally, each timestep executes something like:
 
-\[
+$$
 \begin{align*}
 \mathbf{z}_t &= \sigma(\mathbf{W}_z \mathbf{x}_t + \mathbf{U}_z \mathbf{h}_{t-1} + \mathbf{b}_z) \\
 \mathbf{r}_t &= \sigma(\mathbf{W}_r \mathbf{x}_t + \mathbf{U}_r \mathbf{h}_{t-1} + \mathbf{b}_r) \\
 \tilde{\mathbf{h}}_t &= \tanh(\mathbf{W}_h \mathbf{x}_t + \mathbf{U}_h (\mathbf{r}_t \odot \mathbf{h}_{t-1}) + \mathbf{b}_h) \\
 \mathbf{h}_t &= (1 - \mathbf{z}_t) \odot \mathbf{h}_{t-1} + \mathbf{z}_t \odot \tilde{\mathbf{h}}_t
 \end{align*}
-\]
+$$
 
-where \( \mathbf{z}_t \) and \( \mathbf{r}_t \) are the update and reset gates. This mechanism enables the GRU to propagate useful memory over variable-length sequences while dampening irrelevant history, which is ideal for longitudinal health data where visit frequency and severity vary by patient.
+where $ \mathbf{z}_t $ and $ \mathbf{r}_t $ are the update and reset gates. This mechanism enables the GRU to propagate useful memory over variable-length sequences while dampening irrelevant history, which is ideal for longitudinal health data where visit frequency and severity vary by patient.
 
-After consuming the full sequence of embeddings \( [\mathbf{x}_1, \dots, \mathbf{x}_T] \), the final hidden state \( \mathbf{h}_T \) (here accessed as `h_n[-1]`) summarizes the patient's state over the window. The classifier linearly maps \( \mathbf{h}_T \) to logits for binary prediction:
+After consuming the full sequence of embeddings $ [\mathbf{x}_1, \dots, \mathbf{x}_T] $, the final hidden state $ \mathbf{h}_T $ (here accessed as `h_n[-1]`) summarizes the patient's state over the window. The classifier linearly maps $ \mathbf{h}_T $ to logits for binary prediction:
 
-\[
+$$
 \hat{\mathbf{y}} = \mathrm{softmax}(\mathbf{W}_{\text{clf}} \mathbf{h}_T + \mathbf{b}_{\text{clf}})
-\]
+$$
 
 ---
 
@@ -33,7 +33,7 @@ Yes, and actually it's a *very* reasonable way to handle patient trajectory pred
 
 - **Supervised learning target**: You define `label` as whether a visit corresponds to CKD stage ≥4. Then, crucially, you create `next_label` by shifting that label column *forward in time* within each patient. This turns the problem into a next-visit prediction task.
   
-- **Temporal sequence construction**: `build_sequences()` iterates over patients and builds sliding windows of embeddings of size \( T \leq 5 \). The input to the model is a sequence of embeddings up to time \( t \), and the target is the label at time \( t+1 \). This is appropriate temporal supervision.
+- **Temporal sequence construction**: `build_sequences()` iterates over patients and builds sliding windows of embeddings of size $ T \leq 5 $. The input to the model is a sequence of embeddings up to time $ t $, and the target is the label at time $ t+1 $. This is appropriate temporal supervision.
 
 - **Zero-padding**: The `pad_sequence()` function prepends zeros if the patient doesn't have enough prior visits. This lets you train with a consistent tensor shape while still preserving relative chronology (more recent events at the end of the sequence).
 
@@ -47,11 +47,11 @@ Yes, and actually it's a *very* reasonable way to handle patient trajectory pred
 
 This GRU learns a *representation of longitudinal disease progression* from fixed-size latent visit vectors. If the embeddings are informative about comorbidities, labs, and medications, then the GRU captures how sequences of such latent visits map onto future risk. It is likely learning transitions in health state, temporal correlation patterns, and maybe even the “acceleration” of decline (i.e., increasing rate of stage progression).
 
-In a latent dynamical systems view, this is akin to inferring a state transition function \( f_\theta \) where:
+In a latent dynamical systems view, this is akin to inferring a state transition function $ f_\theta $ where:
 
-\[
+$$
 \mathbf{h}_t = f_\theta(\mathbf{h}_{t-1}, \mathbf{x}_t)
-\]
+$$
 
 and you're using this hidden state to predict future disease progression. In that sense, you're approximating a partially observable Markov decision process (POMDP) where your observations are sparse but sequentially dependent.
 
