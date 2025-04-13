@@ -30,23 +30,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train multiple longitudinal models for CKD classification.")
-    parser.add_argument("--embedding-root", type=str, default="./ckd_embeddings_100", help="Path to the embeddings directory.")
-    parser.add_argument("--window-size", type=int, default=5, help="Sequence window size.")
-    parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of the embeddings.")
-    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train each model.")
+    parser = argparse.ArgumentParser(description="Train multiple longitudinal models for CKD classification with improvements.")
+    parser.add_argument("--embedding-root", type=str, default="./ckd_embeddings_100", help="Path to embeddings.")
+    parser.add_argument("--window-size", type=int, default=10, help="Sequence window size.")
+    parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of embeddings.")
+    parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per model.")
     parser.add_argument("--batch-size", type=int, default=16, help="Batch size.")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
-    parser.add_argument("--patience", type=int, default=5, help="Patience for early stopping.")
-    parser.add_argument("--metadata-file", type=str, default="patient_embedding_metadata.csv", help="Name of the CSV file containing metadata.")
-    parser.add_argument("--random-seed", type=int, default=42, help="Random seed for reproducible splits.")
-    parser.add_argument("--hidden-dim", type=int, default=128, help="Hidden dimension for RNN and ODE models.")
-    parser.add_argument("--num-layers", type=int, default=1, help="Number of GRU layers or Transformer encoder layers.")
-    parser.add_argument("--transformer-nhead", type=int, default=4, help="Number of attention heads in the Transformer encoder.")
-    parser.add_argument("--transformer-dim-feedforward", type=int, default=256, help="Feedforward dimension in the Transformer encoder.")
-    parser.add_argument("--output-model-prefix", type=str, default="best_model", help="Filename prefix for saving models.")
-    args = parser.parse_args()
-    return args
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
+    parser.add_argument("--patience", type=int, default=5, help="Early stopping patience.")
+    parser.add_argument("--scheduler-patience", type=int, default=2, help="Patience for scheduler LR reduction.")
+    parser.add_argument("--metadata-file", type=str, default="patient_embedding_metadata.csv", help="CSV with metadata.")
+    parser.add_argument("--random-seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--hidden-dim", type=int, default=128, help="Hidden dimension for RNN/ODE/TCN.")
+    parser.add_argument("--num-layers", type=int, default=2, help="Layers for RNN/Transformer/TCN.")
+    parser.add_argument("--rnn-dropout", type=float, default=0.2, help="Dropout in RNN.")
+    parser.add_argument("--rnn-bidir", action="store_true", help="Use bidirectional RNN if set.")
+    parser.add_argument("--transformer-nhead", type=int, default=4, help="Heads in Transformer encoder.")
+    parser.add_argument("--transformer-dim-feedforward", type=int, default=256, help="Transformer FF dimension.")
+    parser.add_argument("--transformer-dropout", type=float, default=0.2, help="Dropout in Transformer layers.")
+    parser.add_argument("--output-model-prefix", type=str, default="best_model", help="Filename prefix for saved models.")
+    return parser.parse_args()
 
 def clean_ckd_stage(value):
     try:
@@ -58,18 +61,16 @@ def clean_ckd_stage(value):
             return np.nan
 
 def embedding_exists(row, root):
-    embed_path = os.path.join(root, row["embedding_file"])
-    return os.path.exists(embed_path)
+    return os.path.exists(os.path.join(root, row["embedding_file"]))
 
-def load_embedding(path, cache):
-    if path not in cache:
-        with np.load(path) as data:
+def load_embedding(full_path, cache):
+    if full_path not in cache:
+        with np.load(full_path) as data:
             keys = list(data.keys())
-            cache[path] = data[keys[0]]
-    return cache[path]
+            cache[full_path] = data[keys[0]]
+    return cache[full_path]
 
 def monotonic_labels(labels):
-    # Once label is 1, keep it 1 thereafter to enforce no reversal to 0
     monotonic = []
     has_progressed = False
     for lab in labels:
@@ -83,7 +84,6 @@ def build_sequences(meta, window_size):
     for pid, group in meta.groupby("PatientID"):
         group = group.sort_values(by="EventDate")
         embeddings = list(group["embedding"])
-        # Enforce monotonic label progression
         original_labels = list(group["next_label"])
         labels = monotonic_labels(original_labels)
         for i in range(1, len(embeddings)):
@@ -113,76 +113,151 @@ class CKDSequenceDataset(Dataset):
         context_padded = pad_sequence(context, self.window_size, self.embed_dim)
         return torch.tensor(context_padded, dtype=torch.float32), torch.tensor(label, dtype=torch.long)
 
-# RNN model
 class LongitudinalRNN(nn.Module):
-    def __init__(self, input_dim, hidden_dim, num_layers):
+    def __init__(self, input_dim, hidden_dim, num_layers, dropout=0.1, bidirectional=False):
         super().__init__()
-        self.rnn = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
-        self.classifier = nn.Linear(hidden_dim, 2)
+        self.rnn = nn.GRU(
+            input_dim, hidden_dim, num_layers, batch_first=True,
+            dropout=(dropout if num_layers > 1 else 0.0),
+            bidirectional=bidirectional
+        )
+        real_hidden_dim = hidden_dim * (2 if bidirectional else 1)
+        self.classifier = nn.Linear(real_hidden_dim, 2)
 
     def forward(self, x):
         _, h_n = self.rnn(x)
-        return self.classifier(h_n[-1])
+        if h_n.dim() == 3:  
+            # h_n shape: (num_layers * num_directions, batch, hidden_size)
+            # If bidirectional, we may need to stack the last-layer states
+            last_layer_hidden = h_n[-2:] if h_n.size(0) >= 2 else h_n[-1:]
+            last_layer_hidden = torch.cat(list(last_layer_hidden), dim=1) if last_layer_hidden.dim() == 3 else last_layer_hidden
+        else:
+            last_layer_hidden = h_n[-1]
+        return self.classifier(last_layer_hidden)
 
-# Transformer-based model
-class LongitudinalTransformer(nn.Module):
-    def __init__(self, input_dim, num_layers, nhead, dim_feedforward):
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
         super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * -(np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.pe = pe.unsqueeze(0)
+
+    def forward(self, x):
+        seq_len = x.size(1)
+        return x + self.pe[:, :seq_len, :].to(x.device)
+
+class LongitudinalTransformer(nn.Module):
+    def __init__(self, input_dim, num_layers, nhead, dim_feedforward, dropout=0.1):
+        super().__init__()
+        self.pos_encoder = PositionalEncoding(input_dim)
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=input_dim, 
-            nhead=nhead, 
+            d_model=input_dim,
+            nhead=nhead,
             dim_feedforward=dim_feedforward,
+            dropout=dropout,
             batch_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.classifier = nn.Linear(input_dim, 2)
 
     def forward(self, x):
-        # x shape: (batch, seq_len, embed_dim)
-        # Transformer expects (batch, seq_len, d_model)
-        out = self.transformer_encoder(x)
-        # We just take the last token representation
+        out = self.pos_encoder(x)
+        out = self.transformer_encoder(out)
         last_token = out[:, -1, :]
         return self.classifier(last_token)
 
-# Rudimentary neural ODE-like model (manual Euler integration for demonstration)
-class ODEFunc(nn.Module):
-    def __init__(self, hidden_dim):
+class MLPSimple(nn.Module):
+    def __init__(self, input_dim, window_size, hidden_dim, num_layers=2, dropout=0.1):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim)
+        self.flatten_dim = input_dim * window_size
+        layers = []
+        current_dim = self.flatten_dim
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(current_dim, hidden_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            current_dim = hidden_dim
+        layers.append(nn.Linear(current_dim, 2))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x):
+        # x shape: (batch, seq_len, embed_dim)
+        x = x.view(x.size(0), -1)
+        return self.net(x)
+
+class TemporalBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride, dilation, padding, dropout):
+        super().__init__()
+        self.conv1 = nn.Conv1d(
+            in_channels, out_channels, kernel_size,
+            stride=stride, padding=padding, dilation=dilation
         )
+        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.relu1 = nn.ReLU()
+        self.dropout1 = nn.Dropout(dropout)
+        self.conv2 = nn.Conv1d(
+            out_channels, out_channels, kernel_size,
+            stride=stride, padding=padding, dilation=dilation
+        )
+        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.relu2 = nn.ReLU()
+        self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, y):
-        # ODE derivative estimate
-        return self.net(y)
+        self.downsample = nn.Conv1d(in_channels, out_channels, 1) if in_channels != out_channels else None
 
-class NeuralODEModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim):
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu1(out)
+        out = self.dropout1(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        if self.downsample is not None:
+            x = self.downsample(x)
+        out += x
+        out = self.relu2(out)
+        out = self.dropout2(out)
+        return out
+
+class TCN(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers=2, kernel_size=3, dropout=0.1):
         super().__init__()
-        self.initial_map = nn.Linear(input_dim, hidden_dim)
-        self.ode_func = ODEFunc(hidden_dim)
+        layers = []
+        in_channels = input_dim
+        for i in range(num_layers):
+            out_channels = hidden_dim if i < (num_layers - 1) else hidden_dim
+            dilation_size = 2**i
+            padding = (kernel_size - 1) * dilation_size
+            block = TemporalBlock(
+                in_channels, out_channels, kernel_size=kernel_size,
+                stride=1, dilation=dilation_size, padding=padding, dropout=dropout
+            )
+            layers.append(block)
+            in_channels = out_channels
+        self.network = nn.Sequential(*layers)
+        # We'll produce a single classification from the final state
         self.classifier = nn.Linear(hidden_dim, 2)
 
     def forward(self, x):
-        # x: (batch, seq_len, embed_dim)
-        # We'll treat each time step as a small integration step
-        h = self.initial_map(x[:, 0, :])  # initialize hidden state from first time step
-        for t in range(1, x.size(1)):
-            dt = 1.0  # pretend each step is dt=1
-            h = h + dt * self.ode_func(h)  # Euler step
-            # incorporate new observation into hidden if wanted:
-            obs = self.initial_map(x[:, t, :])
-            h = (h + obs) / 2
-        return self.classifier(h)
+        # x shape: (batch, seq_len, embed_dim)
+        # TCN expects (batch, in_channels, seq_len). We'll treat embed_dim as channels
+        # So we need to permute from (batch, seq_len, embed_dim) -> (batch, embed_dim, seq_len).
+        x = x.permute(0, 2, 1)
+        out = self.network(x)
+        # Now out shape: (batch, hidden_dim, seq_len)
+        # We'll take the last time step
+        last_time = out[:, :, -1]
+        return self.classifier(last_time)
 
 def train_and_evaluate(model, device, train_loader, val_loader, test_loader, args, model_name):
     logger.info(f"Starting {model_name} training.")
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     criterion = nn.CrossEntropyLoss()
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=args.scheduler_patience)
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
@@ -198,6 +273,10 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
             logits = model(x_batch)
             loss = criterion(logits, y_batch)
             loss.backward()
+
+            # Gradient clipping
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+
             optimizer.step()
             train_losses.append(loss.item())
 
@@ -214,6 +293,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         avg_train_loss = np.mean(train_losses)
         avg_val_loss = np.mean(val_losses)
         logger.info(f"{model_name} Epoch {epoch+1}/{args.epochs} -> Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        scheduler.step(avg_val_loss)
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -276,24 +356,20 @@ def main():
     metadata['CKD_stage_clean'] = metadata.groupby('PatientID')['CKD_stage_clean'].bfill()
     metadata = metadata.dropna(subset=['CKD_stage_clean'])
     metadata['CKD_stage_clean'] = metadata['CKD_stage_clean'].astype(int)
-
-    # Binarize: 0 if stage <4, else 1
     metadata['label'] = metadata['CKD_stage_clean'].apply(lambda x: 0 if x < 4 else 1)
-
-    # Next label is the target
     metadata['next_label'] = metadata.groupby('PatientID')['label'].shift(-1)
     metadata = metadata.dropna(subset=['next_label'])
     metadata['next_label'] = metadata['next_label'].astype(int)
 
     logger.info("Filtering valid embedding rows.")
     metadata = metadata[metadata.apply(lambda row: embedding_exists(row, args.embedding_root), axis=1)]
+    embedding_cache = {}
+
+    def load_embedding_for_row(row):
+        path = os.path.join(args.embedding_root, row['embedding_file'])
+        return load_embedding(path, embedding_cache)
 
     logger.info("Loading embeddings.")
-    embedding_cache = {}
-    def load_embedding_for_row(row):
-        full_path = os.path.join(args.embedding_root, row['embedding_file'])
-        return load_embedding(full_path, embedding_cache)
-
     metadata['embedding'] = metadata.apply(load_embedding_for_row, axis=1)
 
     logger.info("Creating train/val/test splits.")
@@ -313,7 +389,6 @@ def main():
     train_dataset = CKDSequenceDataset(train_sequences, args.window_size, args.embed_dim)
     val_dataset = CKDSequenceDataset(val_sequences, args.window_size, args.embed_dim)
     test_dataset = CKDSequenceDataset(test_sequences, args.window_size, args.embed_dim)
-
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
@@ -321,22 +396,43 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     logger.info("Defining our models.")
-    rnn_model = LongitudinalRNN(args.embed_dim, args.hidden_dim, args.num_layers)
-    transformer_model = LongitudinalTransformer(
+    improved_rnn = LongitudinalRNN(
+        input_dim=args.embed_dim,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        dropout=args.rnn_dropout,
+        bidirectional=args.rnn_bidir
+    )
+    improved_transformer = LongitudinalTransformer(
         input_dim=args.embed_dim,
         num_layers=args.num_layers,
         nhead=args.transformer_nhead,
-        dim_feedforward=args.transformer_dim_feedforward
+        dim_feedforward=args.transformer_dim_feedforward,
+        dropout=args.transformer_dropout
     )
-    ode_model = NeuralODEModel(args.embed_dim, args.hidden_dim)
+    mlp_model = MLPSimple(
+        input_dim=args.embed_dim,
+        window_size=args.window_size,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        dropout=args.rnn_dropout
+    )
+    tcn_model = TCN(
+        input_dim=args.embed_dim,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        kernel_size=3,
+        dropout=args.rnn_dropout
+    )
 
-    logger.info("Training RNN, Transformer, and Neural ODE models in succession.")
-    rnn_results = train_and_evaluate(rnn_model, device, train_loader, val_loader, test_loader, args, model_name="RNN")
-    transformer_results = train_and_evaluate(transformer_model, device, train_loader, val_loader, test_loader, args, model_name="Transformer")
-    ode_results = train_and_evaluate(ode_model, device, train_loader, val_loader, test_loader, args, model_name="NeuralODE")
+    logger.info("Training the RNN, Transformer, MLP, and TCN models.")
+    rnn_results = train_and_evaluate(improved_rnn, device, train_loader, val_loader, test_loader, args, model_name="ImprovedRNN")
+    transformer_results = train_and_evaluate(improved_transformer, device, train_loader, val_loader, test_loader, args, model_name="ImprovedTransformer")
+    mlp_results = train_and_evaluate(mlp_model, device, train_loader, val_loader, test_loader, args, model_name="MLP")
+    tcn_results = train_and_evaluate(tcn_model, device, train_loader, val_loader, test_loader, args, model_name="TCN")
 
-    logger.info("All trainings complete. Summary of final test metrics:")
-    for result in [rnn_results, transformer_results, ode_results]:
+    logger.info("All trainings complete. Summary of final test metrics follows.")
+    for result in [rnn_results, transformer_results, mlp_results, tcn_results]:
         logger.info(
             f"Model={result['model_name']} "
             f"Accuracy={result['accuracy']:.4f} "
