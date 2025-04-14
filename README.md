@@ -78,7 +78,7 @@ This design allows efficient access of per-patient longitudinal embeddings for m
 **`run_embedding.sh`**
 ```bash
 #!/bin/bash
-python embedding.py \
+python embeddings.py \
   --csv patients_subset_100.csv \
   --icd icd_mapping.csv \
   --output_dir ckd_embeddings_100 \
@@ -90,7 +90,7 @@ python embedding.py \
 **`run_modeling.sh`**
 ```bash
 #!/bin/bash
-python ckd_modeling.py \
+python ckd_prediction.py \
   --embedding-root ckd_embeddings_100 \
   --window-size 10 \
   --embed-dim 768 \
