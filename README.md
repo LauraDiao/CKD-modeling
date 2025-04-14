@@ -115,6 +115,8 @@ Make sure to `chmod +x run_embedding.sh run_modeling.sh` before executing the sc
 
 This work utilized resources provided by the [UCLA Department of Computational Medicine](https://compmed.ucla.edu/).
 
+This work was also supported by OptumLabs.
+
 ---
 
 For further inquiries or collaboration, please contact:
