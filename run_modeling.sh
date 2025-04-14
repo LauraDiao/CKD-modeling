@@ -1,5 +1,5 @@
 #!/bin/bash
-python ckd_modeling.py \
+python ckd_prediction.py \
   --embedding-root ckd_embeddings_100 \
   --window-size 10 \
   --embed-dim 768 \
