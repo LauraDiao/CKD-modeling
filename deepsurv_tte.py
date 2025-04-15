@@ -272,7 +272,7 @@ class TCN(nn.Module):
         return self.classifier(last_time)
 
 ##############################################
-# DeepSurv Model Definitions for All Architectures
+# Revised DeepSurv Model Definitions with Auxiliary Classification
 ##############################################
 
 class DeepSurvRNN(nn.Module):
@@ -291,6 +291,7 @@ class DeepSurvRNN(nn.Module):
             bidirectional=bidirectional
         )
         self.risk = nn.Linear(hidden_dim * self.num_directions, 1)
+        self.classifier = nn.Linear(hidden_dim * self.num_directions, 2)
     
     def forward(self, x):
         _, h_n = self.rnn(x)
@@ -298,7 +299,8 @@ class DeepSurvRNN(nn.Module):
         top_layer = h_n[-1]
         top_layer = top_layer.transpose(0, 1).contiguous().view(x.size(0), -1)
         risk = self.risk(top_layer).squeeze(-1)
-        return risk
+        logits = self.classifier(top_layer)
+        return logits, risk
 
 class DeepSurvLSTM(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers, dropout=0.1, bidirectional=False):
@@ -316,6 +318,7 @@ class DeepSurvLSTM(nn.Module):
             bidirectional=bidirectional
         )
         self.risk = nn.Linear(hidden_dim * self.num_directions, 1)
+        self.classifier = nn.Linear(hidden_dim * self.num_directions, 2)
     
     def forward(self, x):
         _, (h_n, _) = self.lstm(x)
@@ -323,7 +326,8 @@ class DeepSurvLSTM(nn.Module):
         top_layer = h_n[-1]
         top_layer = top_layer.transpose(0, 1).contiguous().view(x.size(0), -1)
         risk = self.risk(top_layer).squeeze(-1)
-        return risk
+        logits = self.classifier(top_layer)
+        return logits, risk
 
 class DeepSurvTransformer(nn.Module):
     def __init__(self, input_dim, num_layers, nhead, dim_feedforward, dropout=0.1):
@@ -338,13 +342,15 @@ class DeepSurvTransformer(nn.Module):
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.risk = nn.Linear(input_dim, 1)
+        self.classifier = nn.Linear(input_dim, 2)
     
     def forward(self, x):
         x = self.pos_encoder(x)
         out = self.transformer_encoder(x)
         last_token = out[:, -1, :]
         risk = self.risk(last_token).squeeze(-1)
-        return risk
+        logits = self.classifier(last_token)
+        return logits, risk
 
 class DeepSurvMLP(nn.Module):
     def __init__(self, input_dim, window_size, hidden_dim, num_layers=2, dropout=0.1):
@@ -357,13 +363,16 @@ class DeepSurvMLP(nn.Module):
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout))
             current_dim = hidden_dim
-        layers.append(nn.Linear(current_dim, 1))  # risk score output
         self.net = nn.Sequential(*layers)
+        self.risk = nn.Linear(current_dim, 1)
+        self.classifier = nn.Linear(current_dim, 2)
     
     def forward(self, x):
         x = x.view(x.size(0), -1)
-        risk = self.net(x).squeeze(-1)
-        return risk
+        features = self.net(x)
+        risk = self.risk(features).squeeze(-1)
+        logits = self.classifier(features)
+        return logits, risk
 
 class DeepSurvTCN(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_layers=2, kernel_size=3, dropout=0.1):
@@ -382,16 +391,18 @@ class DeepSurvTCN(nn.Module):
             in_channels = out_channels
         self.network = nn.Sequential(*layers)
         self.risk = nn.Linear(hidden_dim, 1)
+        self.classifier = nn.Linear(hidden_dim, 2)
     
     def forward(self, x):
         x = x.permute(0, 2, 1)
         out = self.network(x)
         last_time = out[:, :, -1]
         risk = self.risk(last_time).squeeze(-1)
-        return risk
+        logits = self.classifier(last_time)
+        return logits, risk
 
 ##############################################
-# End DeepSurv Model Definitions
+# Revised DeepSurv Training and Evaluation Function
 ##############################################
 
 ##############################################
@@ -421,7 +432,7 @@ def concordance_index(event, time, risk):
     Compute the concordance index (C-index) for survival data.
     This implementation is quadratic in the number of samples (for illustration).
     """
-    event = event.astype(np.int)
+    event = event.astype(int)  # Use the built-in int instead of np.int
     n = len(time)
     num = 0.0
     num_valid = 0.0
@@ -435,15 +446,21 @@ def concordance_index(event, time, risk):
                     num += 0.5
     return num / num_valid if num_valid > 0 else 0.0
 
+
 def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_loader, args, model_name):
-    logger.info(f"Starting {model_name} training (DeepSurv).")
+    logger.info(f"Starting {model_name} training (DeepSurv multi-task, classification evaluation).")
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=args.scheduler_patience)
+    # We use cross-entropy for the auxiliary classification branch.
+    classification_criterion = nn.CrossEntropyLoss()
+    aux_weight = 1.0  # Adjust the weight of the classification loss if desired.
+
     best_val_loss = float('inf')
     epochs_no_improve = 0
     best_model_path = f"{args.output_model_prefix}_{model_name}.pt"
 
+    # Training loop (multi-task loss: survival + classification)
     for epoch in range(args.epochs):
         model.train()
         train_losses = []
@@ -453,11 +470,15 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
             x_batch = x_batch.to(device)
             event_batch = event_batch.to(device)
             tte_batch = tte_batch.to(device)
+            # Forward pass returns both auxiliary classification logits and survival risk.
+            logits, risk = model(x_batch)
             mask = ~torch.isnan(tte_batch)
             if mask.sum() == 0:
-                continue
-            risk = model(x_batch)
-            loss = cox_ph_loss(risk[mask], tte_batch[mask], event_batch[mask])
+                surv_loss = torch.tensor(0.0, device=device)
+            else:
+                surv_loss = cox_ph_loss(risk[mask], tte_batch[mask], event_batch[mask])
+            class_loss = classification_criterion(logits, event_batch.long())
+            loss = surv_loss + aux_weight * class_loss
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             optimizer.step()
@@ -471,18 +492,20 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
                 x_batch = x_batch.to(device)
                 event_batch = event_batch.to(device)
                 tte_batch = tte_batch.to(device)
+                logits, risk = model(x_batch)
                 mask = ~torch.isnan(tte_batch)
                 if mask.sum() == 0:
-                    continue
-                risk = model(x_batch)
-                loss = cox_ph_loss(risk[mask], tte_batch[mask], event_batch[mask])
+                    surv_loss = torch.tensor(0.0, device=device)
+                else:
+                    surv_loss = cox_ph_loss(risk[mask], tte_batch[mask], event_batch[mask])
+                class_loss = classification_criterion(logits, event_batch.long())
+                loss = surv_loss + aux_weight * class_loss
                 val_losses.append(loss.item())
 
         avg_train_loss = np.mean(train_losses) if train_losses else float('inf')
         avg_val_loss = np.mean(val_losses) if val_losses else float('inf')
         logger.info(f"{model_name} Epoch {epoch+1}/{args.epochs} -> Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
         scheduler.step(avg_val_loss)
-
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             epochs_no_improve = 0
@@ -495,8 +518,11 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
                 break
 
     logger.info(f"{model_name}: Loading best model for final evaluation.")
-    model.load_state_dict(torch.load(best_model_path))
+    model.load_state_dict(torch.load(best_model_path, weights_only=True))
     model.eval()
+
+    # Evaluation: obtain both auxiliary (classification) predictions and survival risk scores.
+    all_logits = []
     all_risk = []
     all_events = []
     all_times = []
@@ -504,16 +530,38 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         for batch in test_loader:
             x_batch, event_batch, _, _, tte_batch = batch
             x_batch = x_batch.to(device)
-            risk = model(x_batch)
+            logits, risk = model(x_batch)
+            all_logits.extend(logits.cpu().numpy())
             all_risk.extend(risk.cpu().numpy())
             all_events.extend(event_batch.numpy())
             all_times.extend(tte_batch.numpy())
     all_events = np.array(all_events)
     all_times = np.array(all_times)
     all_risk = np.array(all_risk)
+    # Compute c-index on survival risk predictions.
     c_index = concordance_index(all_events, all_times, all_risk)
-    logger.info(f"{model_name} Concordance Index: {c_index:.4f}")
-    return {"model_name": model_name, "concordance_index": c_index}
+
+    # Use the auxiliary classifier's outputs for classification evaluation.
+    all_logits = np.array(all_logits)
+    all_probs = nn.Softmax(dim=1)(torch.tensor(all_logits)).numpy()
+    prevalence = np.mean(all_events)
+    logger.info(f"{model_name} Test Prevalence: {prevalence:.4f}")
+    threshold = prevalence
+    raw_metrics = compute_metrics_at_threshold(all_events, all_probs[:, 1], threshold)
+    ci_dict = bootstrap_metrics(all_events, all_probs[:, 1], threshold)
+    logger.info(f"{model_name} Threshold set to prevalence={threshold:.4f}.")
+    for k in ["accuracy", "precision", "recall", "f1", "ppv", "npv", "auroc", "auprc"]:
+        point_est = raw_metrics[k]
+        meanv, lower, upper = ci_dict[k]
+        logger.info(f"{model_name} {k}: {point_est:.4f} (95% CI: {lower:.4f}-{upper:.4f})")
+    # Return both classification metrics and the c-index.
+    result = {"model_name": model_name, "concordance_index": c_index}
+    result.update(raw_metrics)
+    return result
+
+
+
+
 
 ##############################################
 # End DeepSurv Loss and Evaluation Functions
@@ -629,7 +677,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=args.scheduler_patience)
     best_val_loss = float('inf')
     epochs_no_improve = 0
-    best_model_path = f"{args.output-model_prefix}_{model_name}.pt"
+    best_model_path = f"{args.output_model_prefix}_{model_name}.pt"  # Fixed: using output_model_prefix
 
     for epoch in range(args.epochs):
         model.train()
@@ -642,8 +690,6 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
                 y_batch = y_batch.to(device)
                 tte_batch = tte_batch.to(device)
                 logits, _ = model(x_batch), None  # This branch is not used for DeepSurv
-                # For classification models the loss is computed using cross-entropy;
-                # here we are not using these models
                 loss = classification_criterion(logits, y_batch.long())
             else:
                 x_batch, y_batch, _, _ = batch
@@ -718,6 +764,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         meanv, lower, upper = ci_dict[k]
         logger.info(f"{model_name} {k}: {point_est:.4f} (95% CI: {lower:.4f}-{upper:.4f})")
     return {"model_name": model_name, **raw_metrics}
+
 
 def predict_label_switches(model, loader, device):
     model.eval()
@@ -952,6 +999,20 @@ def main():
     for result in deep_surv_results:
         if result is None:
             continue
+        logger.info(
+            f"Model={result['model_name']} "
+            f"Accuracy={result['accuracy']:.4f} "
+            f"Precision={result['precision']:.4f} "
+            f"Recall={result['recall']:.4f} "
+            f"F1={result['f1']:.4f} "
+            f"PPV={result['ppv']:.4f} "
+            f"NPV={result['npv']:.4f} "
+            f"AUROC={result['auroc']:.4f} "
+            f"AUPRC={result['auprc']:.4f}"
+        )
+    for result in deep_surv_results:
+        if result is None:
+            continue
         logger.info(f"Model={result['model_name']} Concordance Index={result['concordance_index']:.4f}")
 
     logger.info("Analyzing label switches on test set for classification models.")
@@ -960,7 +1021,12 @@ def main():
         ("LSTM", improved_lstm),
         ("Transformer", improved_transformer),
         ("MLP", mlp_model),
-        ("TCN", tcn_model)
+        ("Deep_surv_TCN", tcn_model),
+        ("Deep_surv_RNN", deep_surv_rnn),
+        ("Deep_surv_LSTM", deep_surv_lstm),
+        ("Deep_surv_Transformer", deep_surv_transformer),
+        ("Deep_surv_MLP", deep_surv_mlp),
+        ("Deep_surv_TCN", deep_surv_tcn)
     ]
     for name, model_obj in models_for_analysis:
         df_preds = predict_label_switches(model_obj, test_loader_class, device)
