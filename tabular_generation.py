@@ -4,16 +4,16 @@ from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
 # -----------------------------
 # Load and preprocess
 # -----------------------------
-df = pd.read_csv("patients_subset_10.csv", low_memory=False).drop_duplicates()
+df = pd.read_csv("patients_subset_100.csv", low_memory=False).drop_duplicates()
 df['EventTimeStamp'] = pd.to_datetime(df['EventTimeStamp'], errors='coerce')
 df['EventDate'] = df['EventTimeStamp'].dt.date
 df['DataCategory'] = df['DataCategory'].fillna('None')
 df['DataNumeric'] = pd.to_numeric(df['DataNumeric'], errors='coerce')
-df['is_gfr'] = df['DataCategory'].str.upper().str.contains("GFR|GFREST", na=False)
 
 # -----------------------------
 # Base: full patient-day index
 # -----------------------------
+df['is_gfr'] = df['DataCategory'].str.upper().str.contains("GFR|GFREST", na=False)
 all_days = df[['PatientID', 'EventDate']].drop_duplicates().sort_values(['PatientID', 'EventDate'])
 
 # -----------------------------
@@ -22,9 +22,7 @@ all_days = df[['PatientID', 'EventDate']].drop_duplicates().sort_values(['Patien
 gfr_df = df[df['is_gfr'] & df['DataNumeric'].notna()]
 gfr_daywise = (
     gfr_df.groupby(['PatientID', 'EventDate'])['DataNumeric']
-    .first()
-    .reset_index()
-    .rename(columns={'DataNumeric': 'GFR_combined'})
+    .first().reset_index().rename(columns={'DataNumeric': 'GFR_combined'})
 )
 
 base_df = pd.merge(all_days, gfr_daywise, on=['PatientID', 'EventDate'], how='left')
@@ -64,34 +62,51 @@ diag_df = df[df["DataType"] == "Diagnosis"].copy()
 diag_df["ICD_clean"] = diag_df["DataCategory"].astype(str).str.replace(".", "", regex=False)
 
 diagnosis_map = diag_df.groupby(["PatientID", "EventDate"])["ICD_clean"].apply(list)
-mlb = MultiLabelBinarizer()
-diag_features = mlb.fit_transform(diagnosis_map.values)
+mlb_diag = MultiLabelBinarizer()
+diag_features = mlb_diag.fit_transform(diagnosis_map.values)
 
 diag_df_onehot = pd.DataFrame(
     diag_features,
-    columns=[f"diag_{c}" for c in mlb.classes_],
+    columns=[f"diag_{c}" for c in mlb_diag.classes_],
     index=diagnosis_map.index
 ).reset_index()
 
 base_df = pd.merge(base_df, diag_df_onehot, on=["PatientID", "EventDate"], how="left")
 
 # -----------------------------
-# Manual lab expansion (no pivot)
+# One-hot encode medications
 # -----------------------------
-lab_df = df[df["DataType"] == "Lab"].copy()
+med_df = df[df["DataType"] == "Medications"].copy()
+med_df["med_clean"] = med_df["DataCategory"].astype(str).str.upper().str.replace(" ", "_")
+
+medication_map = med_df.groupby(["PatientID", "EventDate"])["med_clean"].apply(list)
+mlb_med = MultiLabelBinarizer()
+med_features = mlb_med.fit_transform(medication_map.values)
+
+med_df_onehot = pd.DataFrame(
+    med_features,
+    columns=[f"med_{c}" for c in mlb_med.classes_],
+    index=medication_map.index
+).reset_index()
+
+base_df = pd.merge(base_df, med_df_onehot, on=["PatientID", "EventDate"], how="left")
+
+# -----------------------------
+# Pivot-style lab expansion
+# -----------------------------
+lab_df = df[(df["DataType"] == "Labs") & df["DataNumeric"].notna()].copy()
 lab_df["DataCategory"] = lab_df["DataCategory"].astype(str).str.upper()
 
-lab_expanded = base_df.copy()
-for lab in lab_df["DataCategory"].unique():
-    lab_slice = lab_df[lab_df["DataCategory"] == lab]
-    lab_slice = lab_slice.rename(columns={"DataNumeric": lab}).drop(columns="DataCategory")
-    lab_expanded = pd.merge(lab_expanded, lab_slice[['PatientID', 'EventDate', lab]],
-                            on=["PatientID", "EventDate"], how="left")
+lab_pivot = (
+    lab_df.groupby(["PatientID", "EventDate", "DataCategory"])["DataNumeric"]
+    .first().unstack("DataCategory").reset_index()
+)
 
-base_df = lab_expanded
+lab_pivot.columns = ["PatientID", "EventDate"] + [f"lab_{c}" for c in lab_pivot.columns[2:]]
+base_df = pd.merge(base_df, lab_pivot, on=["PatientID", "EventDate"], how="left")
 
 # -----------------------------
-# One-hot encode demographics
+# Optional: One-hot encode demographics
 # -----------------------------
 def format_demographics(row):
     race_ethnicity = str(row["DataCategory"]).replace("//", " ").replace("/", " ")
@@ -124,4 +139,4 @@ base_df = pd.merge(base_df, demo_df, on="PatientID", how="left")
 print("[INFO] Final tabular shape:", base_df.shape)
 print("[INFO] Sample features:\n", base_df.head())
 print("[INFO] CKD stage counts:\n", base_df["CKD_stage"].value_counts(dropna=False))
-base_df.to_csv("ckd_processed_tab_data_10.csv")
+base_df.to_csv("ckd_processed_tab_data_100.csv", index=False)
