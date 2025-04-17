@@ -123,7 +123,7 @@ def plot_metric_bars(all_boot_metrics):
         plt.tight_layout()
         plt.show()
 
-def evaluate_models(filepaths, n_boot=1000, n_workers=8, threshold_cap=1.0, threshold_step=0.01, verbose=False):
+def evaluate_models(filepaths, n_boot=1000, n_workers=8, threshold_cap=1.0, threshold_step=0.01):
     results = {}
     all_boot_metrics = {}
     for filepath in filepaths:
@@ -133,12 +133,13 @@ def evaluate_models(filepaths, n_boot=1000, n_workers=8, threshold_cap=1.0, thre
         threshold = find_optimal_threshold(y_true, y_probs, max_threshold=threshold_cap, step=threshold_step)
         print(f"Optimal threshold selected: {threshold:.4f}")
         metrics = compute_metrics(y_true, y_probs, threshold)
-
+        print("Raw Metrics:")
+        for k, v in metrics.items():
+            print(f"  {k}: {v:.4f}")
         boot_metrics = bootstrap_metrics(y_true, y_probs, threshold, n_iterations=n_boot, n_workers=n_workers)
-        if verbose:
-            print("Bootstrapped Metrics with 95% Confidence Intervals:")
-            for k, (mean, low, high) in boot_metrics.items():
-                print(f"  {k}: {mean:.4f} [{low:.4f}, {high:.4f}]")
+        print("Bootstrapped Metrics with 95% Confidence Intervals:")
+        for k, (mean, low, high) in boot_metrics.items():
+            print(f"  {k}: {mean:.4f} [{low:.4f}, {high:.4f}]")
         results[name] = {
             "y_true": y_true,
             "y_probs": y_probs,
@@ -148,3 +149,20 @@ def evaluate_models(filepaths, n_boot=1000, n_workers=8, threshold_cap=1.0, thre
         all_boot_metrics[name] = boot_metrics
     plot_roc_pr_curves(results)
     plot_metric_bars(all_boot_metrics)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Evaluate classification logits and compute metrics with CIs.")
+    parser.add_argument("files", nargs="+", help="Paths to CSV files with logits and binary labels.")
+    parser.add_argument("--n_boot", type=int, default=1000, help="Number of bootstrap iterations")
+    parser.add_argument("--n_workers", type=int, default=8, help="Number of parallel workers for bootstrapping")
+    parser.add_argument("--threshold_cap", type=float, default=1.0, help="Max threshold to consider")
+    parser.add_argument("--threshold_step", type=float, default=0.01, help="Step size for threshold search")
+    args = parser.parse_args()
+
+    evaluate_models(
+        args.files,
+        n_boot=args.n_boot,
+        n_workers=args.n_workers,
+        threshold_cap=args.threshold_cap,
+        threshold_step=args.threshold_step
+    )
