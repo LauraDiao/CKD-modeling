@@ -155,3 +155,20 @@ def evaluate_models(filepaths, n_boot=1000, n_workers=8, threshold_cap=1.0, thre
 
     plot_roc_pr_curves(results)
     plot_metric_bars(all_boot_metrics)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Evaluate Survival logits and compute metrics with CIs.")
+    parser.add_argument("files", nargs="+", help="Paths to CSV files with logits and binary labels.")
+    parser.add_argument("--n_boot", type=int, default=1000, help="Number of bootstrap iterations")
+    parser.add_argument("--n_workers", type=int, default=8, help="Number of parallel workers for bootstrapping")
+    parser.add_argument("--threshold_cap", type=float, default=1.0, help="Max threshold to consider")
+    parser.add_argument("--threshold_step", type=float, default=0.01, help="Step size for threshold search")
+    args = parser.parse_args()
+
+    evaluate_models(
+        args.files,
+        n_boot=args.n_boot,
+        n_workers=args.n_workers,
+        threshold_cap=args.threshold_cap,
+        threshold_step=args.threshold_step
+    )
