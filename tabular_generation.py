@@ -1,10 +1,12 @@
 import pandas as pd
 from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
+from tqdm import tqdm
+import re
 
 # -----------------------------
 # Load and preprocess
 # -----------------------------
-df = pd.read_csv("patients_subset_100.csv", low_memory=False).drop_duplicates()
+df = pd.read_csv("patients_subset_all.csv", low_memory=False).drop_duplicates()
 df['EventTimeStamp'] = pd.to_datetime(df['EventTimeStamp'], errors='coerce')
 df['EventDate'] = df['EventTimeStamp'].dt.date
 df['DataCategory'] = df['DataCategory'].fillna('None')
@@ -30,17 +32,23 @@ base_df = base_df.sort_values(['PatientID', 'EventDate'])
 base_df["GFR_combined"] = base_df.groupby("PatientID")["GFR_combined"].ffill()
 
 def gfr_to_stage(gfr):
-    if pd.isna(gfr): return None, 0
-    if gfr >= 90: return "1", 1
-    if gfr >= 60: return "2", 2
-    if gfr >= 45: return "3a", 3.1
-    if gfr >= 30: return "3b", 3.2
-    if gfr >= 15: return "4", 4
+    if pd.isna(gfr): 
+        return None, 0
+    if gfr >= 90: 
+        return "1", 1
+    if gfr >= 60: 
+        return "2", 2
+    if gfr >= 45: 
+        return "3a", 3.1
+    if gfr >= 30: 
+        return "3b", 3.2
+    if gfr >= 15: 
+        return "4", 4
     return "5", 5
 
 # Enforce monotonic CKD staging
 new_stages = {}
-for pid, group in base_df.groupby("PatientID"):
+for pid, group in base_df.groupby("PatientID"):  # tqdm can be re-enabled here
     group = group.sort_values("EventDate")
     max_rank = 0
     prev_idx = None
@@ -56,10 +64,19 @@ for pid, group in base_df.groupby("PatientID"):
 base_df["CKD_stage"] = base_df.index.map(new_stages)
 
 # -----------------------------
-# One-hot encode diagnoses
+# One-hot encode diagnoses (truncated ICD codes)
 # -----------------------------
+def truncate_icd(code):
+    code = str(code).strip().replace(" ", "")
+    if '.' in code:
+        prefix, suffix = code.split('.', 1)
+        return f"{prefix}.{suffix[0]}" if suffix else prefix
+    return code
+
+
+
 diag_df = df[df["DataType"] == "Diagnosis"].copy()
-diag_df["ICD_clean"] = diag_df["DataCategory"].astype(str).str.replace(".", "", regex=False)
+diag_df["ICD_clean"] = diag_df["DataCategory"].apply(truncate_icd)
 
 diagnosis_map = diag_df.groupby(["PatientID", "EventDate"])["ICD_clean"].apply(list)
 mlb_diag = MultiLabelBinarizer()
@@ -139,4 +156,4 @@ base_df = pd.merge(base_df, demo_df, on="PatientID", how="left")
 print("[INFO] Final tabular shape:", base_df.shape)
 print("[INFO] Sample features:\n", base_df.head())
 print("[INFO] CKD stage counts:\n", base_df["CKD_stage"].value_counts(dropna=False))
-base_df.to_csv("ckd_processed_tab_data_100.csv", index=False)
+base_df.to_csv("ckd_processed_tab_full.csv", index=False)
