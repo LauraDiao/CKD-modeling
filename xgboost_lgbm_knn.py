@@ -15,9 +15,9 @@ from sklearn.metrics import (
     precision_recall_fscore_support,
     confusion_matrix
 )
-from sklearn.neighbors import KNeighborsClassifier
+# Removed: from sklearn.neighbors import KNeighborsClassifier
 import xgboost as xgb
-import lightgbm as lgb
+# Removed: import lightgbm as lgb
 import joblib
 from datetime import timedelta
 
@@ -26,21 +26,21 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler("sklearn_lgbm_models_no_early_stopping_tte_1year_future.log", mode='w'),
+        logging.FileHandler("xgboost_only_model_tte_1year_future.log", mode='w'), # Updated log file name
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="CKD classification (1-year future window) and time-to-event training with XGBoost, LightGBM, and KNN models (no early stopping).")
+    parser = argparse.ArgumentParser(description="CKD classification (1-year future window) and time-to-event training with XGBoost models (no early stopping).") # Updated description
     parser.add_argument("--embedding-root", type=str, default="./ckd_embeddings_10", help="Path to embeddings.")
     parser.add_argument("--window-size", type=int, default=10, help="Sequence window size.")
     parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of embeddings.")
     parser.add_argument("--metadata-file", type=str, default="patient_embedding_metadata.csv", help="CSV with metadata.")
     parser.add_argument("--random-seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--max-patients", type=int, default=None, help="If set, only load embeddings for up to this many patients.")
-    parser.add_argument("--output-model-prefix", type=str, default="best_model_1yr_future_sklearn_lgbm_no_es", help="Filename prefix for saved models.")
+    parser.add_argument("--output-model-prefix", type=str, default="best_model_1yr_future_xgboost_only_no_es", help="Filename prefix for saved models.") # Updated prefix
     parser.add_argument("--log-tte", action="store_true", help="Apply log transformation to time-to-event targets for Cox modeling.")
     parser.add_argument("--prediction-horizon-days", type=int, default=365, help="Number of days into the future to check for an event for label generation.")
 
@@ -48,18 +48,8 @@ def parse_args():
     parser.add_argument("--xgb-n-estimators", type=int, default=100, help="Number of estimators for XGBoost.")
     parser.add_argument("--xgb-max-depth", type=int, default=3, help="Max depth for XGBoost.")
     parser.add_argument("--xgb-learning-rate", type=float, default=0.1, help="Learning rate for XGBoost.")
-    # parser.add_argument("--xgb-early-stopping-rounds", type=int, default=0, help="Early stopping rounds for XGBoost (set to 0 to disable).") # Removed
 
-    # LightGBM specific arguments
-    parser.add_argument("--lgbm-n-estimators", type=int, default=100, help="Number of estimators for LightGBM.")
-    parser.add_argument("--lgbm-max-depth", type=int, default=-1, help="Max depth for LightGBM (-1 means no limit).")
-    parser.add_argument("--lgbm-num-leaves", type=int, default=31, help="Number of leaves for LightGBM.")
-    parser.add_argument("--lgbm-learning-rate", type=float, default=0.1, help="Learning rate for LightGBM.")
-    parser.add_argument("--lgbm-min-child-samples", type=int, default=20, help="Min number of data in one leaf for LightGBM.")
-    # parser.add_argument("--lgbm-early-stopping-rounds", type=int, default=0, help="Early stopping rounds for LightGBM (set to 0 to disable).") # Removed
-
-    # KNN specific arguments
-    parser.add_argument("--knn-n-neighbors", type=int, default=5, help="Number of neighbors for KNN.")
+    # Removed LightGBM and KNN arguments
 
     return parser.parse_args()
 
@@ -344,7 +334,6 @@ def prepare_sklearn_data(sequence_records, window_size, embed_dim, for_survival=
 def train_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val, X_test, y_test_cls, pids_test, local_indices_test, args):
     logger.info(f"Starting {model_name} training (Classification: {args.prediction_horizon_days}-day future label).")
     
-    # Early stopping has been removed from this function
     model.fit(X_train, y_train)
     logger.info(f"{model_name}: Trained for specified number of estimators/iterations.")
     
@@ -401,13 +390,12 @@ def train_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val,
     return final_results_dict, model
 
 def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s, y_train_event_s, 
-                                   X_val_s, y_val_time_s, y_val_event_s, # Val args kept for signature, but not used for ES
+                                   X_val_s, y_val_time_s, y_val_event_s,
                                    X_test_s, y_test_time_s, y_test_event_s, 
                                    pids_test_s, local_indices_test_s, args):
     logger.info(f"Starting {model_name} training (Survival TTE to first progression).")
     y_train_xgb_surv = np.where(y_train_event_s == 1, y_train_time_s, -y_train_time_s)
     
-    # Early stopping removed
     model.fit(X_train_s, y_train_xgb_surv)
     logger.info(f"{model_name}: Trained for specified number of estimators.")
 
@@ -440,48 +428,6 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
     logger.info(f"{model_name}: Detailed survival test outputs saved to {out_csv_surv_p}")
 
     return final_results_dict
-
-def train_evaluate_lgbm_survival(model, model_name, X_train_s, y_train_time_s, y_train_event_s, 
-                                X_val_s, y_val_time_s, y_val_event_s, # Val args kept for signature, but not used for ES
-                                X_test_s, y_test_time_s, y_test_event_s, 
-                                pids_test_s, local_indices_test_s, args):
-    logger.info(f"Starting {model_name} training (Survival TTE to first progression).")
-    y_train_lgbm_surv = np.where(y_train_event_s == 1, y_train_time_s, -y_train_time_s)
-    
-    # Early stopping removed
-    model.fit(X_train_s, y_train_lgbm_surv)
-    logger.info(f"{model_name}: Trained for specified number of estimators.")
-
-    model_path = f"{args.output_model_prefix}_{model_name}.joblib"
-    joblib.dump(model, model_path)
-    logger.info(f"{model_name}: Survival model saved to {model_path}")
-
-    risk_scores_test = model.predict(X_test_s) 
-
-    final_results_dict = {"model_name": model_name + "_Survival"}
-    if len(y_test_time_s) > 1 and np.sum(y_test_event_s) > 0:
-        c_idx_tte = concordance_index(y_test_time_s, risk_scores_test, y_test_event_s)
-        logger.info(f"{model_name} Concordance Index (TTE to first prog): {c_idx_tte:.4f}")
-        final_results_dict["concordance_index_tte"] = c_idx_tte
-    else:
-        logger.warning(f"{model_name}: Not enough valid data or no events to calculate C-index for TTE.")
-        final_results_dict["concordance_index_tte"] = np.nan
-
-    output_dir_dets = f"./{args.prediction_horizon_days}day_future_prediction_outputs"
-    os.makedirs(output_dir_dets, exist_ok=True)
-    df_surv_dets = pd.DataFrame({
-        "PatientID": pids_test_s,
-        "LocalIndex": local_indices_test_s,
-        "tte_cox_risk_score": risk_scores_test,
-        "tte_cox_true_time": y_test_time_s,
-        "tte_cox_true_event": y_test_event_s
-    })
-    out_csv_surv_p = os.path.join(output_dir_dets, f"{model_name}_detailed_outputs_survival.csv")
-    df_surv_dets.to_csv(out_csv_surv_p, index=False)
-    logger.info(f"{model_name}: Detailed survival test outputs saved to {out_csv_surv_p}")
-
-    return final_results_dict
-
 
 def predict_label_switches_sklearn(model, X_data, y_true_labels, pids, local_indices, N_days_horizon):
     preds = model.predict(X_data) 
@@ -528,7 +474,7 @@ def analyze_switches_Nday_future(df_preds_Nday, N_days_horizon):
 def main():
     global args 
     args = parse_args()
-    logger.info(f"Running with configuration for {args.prediction_horizon_days}-DAY FUTURE PREDICTION (XGBoost, LightGBM & KNN - NO EARLY STOPPING):")
+    logger.info(f"Running with configuration for {args.prediction_horizon_days}-DAY FUTURE PREDICTION (XGBoost ONLY - NO EARLY STOPPING):") # Updated description
     for key, val in vars(args).items(): logger.info(f"{key}: {val}")
 
     np.random.seed(args.random_seed)
@@ -574,7 +520,7 @@ def main():
     val_pids, test_pids = train_test_split(temp_pids, test_size=0.5, random_state=args.random_seed)
 
     train_meta = metadata[metadata['PatientID'].isin(train_pids)].copy()
-    val_meta = metadata[metadata['PatientID'].isin(val_pids)].copy() # val_meta still created but not used in fit
+    val_meta = metadata[metadata['PatientID'].isin(val_pids)].copy() 
     test_meta = metadata[metadata['PatientID'].isin(test_pids)].copy()
     logger.info(f"Data split: Train PIDs={len(train_pids)}, Val PIDs={len(val_pids)}, Test PIDs={len(test_pids)}")
 
@@ -583,7 +529,7 @@ def main():
     val_seq_records = build_sequences_1year_future_label(val_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
     test_seq_records = build_sequences_1year_future_label(test_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
 
-    if not all([train_seq_records, val_seq_records, test_seq_records]): # val_seq_records still needed for prepare_sklearn_data
+    if not all([train_seq_records, val_seq_records, test_seq_records]): 
         logger.error("One or more sequence sets are empty. Exiting."); return
 
     (X_train, y_train_cls, _, _, 
@@ -595,7 +541,7 @@ def main():
 
     logger.info(f"Sklearn data shapes: X_train: {X_train.shape}, y_train_cls: {y_train_cls.shape}")
     logger.info(f"Train survival data: {np.sum(train_survival_mask)} valid samples.")
-    logger.info(f"Val survival data: {np.sum(val_survival_mask)} valid samples (not used for early stopping in fit).")
+    logger.info(f"Val survival data: {np.sum(val_survival_mask)} valid samples (not used for fitting).")
     logger.info(f"Test survival data: {np.sum(test_survival_mask)} valid samples.")
 
     all_results = []
@@ -612,44 +558,15 @@ def main():
     )
     results_xgb_cls, trained_xgb_cls = train_evaluate_classifier(
         xgb_clf, f"XGBoost_{args.prediction_horizon_days}DayFuture_Classifier",
-        X_train, y_train_cls, X_val, y_val_cls, X_test, y_test_cls, # X_val, y_val_cls passed but not used by fit
+        X_train, y_train_cls, X_val, y_val_cls, X_test, y_test_cls, 
         pids_test, local_indices_test, args
     )
     all_results.append(results_xgb_cls)
     trained_classification_models["XGBoost_Classifier"] = trained_xgb_cls
 
-    # --- LightGBM Classifier ---
-    lgbm_clf = lgb.LGBMClassifier(
-        n_estimators=args.lgbm_n_estimators,
-        learning_rate=args.lgbm_learning_rate,
-        num_leaves=args.lgbm_num_leaves,
-        max_depth=args.lgbm_max_depth,
-        min_child_samples=args.lgbm_min_child_samples,
-        random_state=args.random_seed,
-        verbose=-1 
-    )
-    results_lgbm_cls, trained_lgbm_cls = train_evaluate_classifier(
-        lgbm_clf, f"LightGBM_{args.prediction_horizon_days}DayFuture_Classifier",
-        X_train, y_train_cls, X_val, y_val_cls, X_test, y_test_cls, # X_val, y_val_cls passed but not used by fit
-        pids_test, local_indices_test, args
-    )
-    all_results.append(results_lgbm_cls)
-    trained_classification_models["LightGBM_Classifier"] = trained_lgbm_cls
-    
-    # --- KNN Classifier ---
-    knn_clf = KNeighborsClassifier(n_neighbors=args.knn_n_neighbors)
-    results_knn_cls, trained_knn_cls = train_evaluate_classifier(
-        knn_clf, f"KNN_{args.prediction_horizon_days}DayFuture_Classifier",
-        X_train, y_train_cls, None, None, 
-        X_test, y_test_cls,
-        pids_test, local_indices_test, args
-    )
-    all_results.append(results_knn_cls)
-    trained_classification_models["KNN_Classifier"] = trained_knn_cls
-
     # --- Survival Models ---
     X_train_s, y_train_time_s, y_train_event_s = X_train[train_survival_mask], y_train_time[train_survival_mask], y_train_event[train_survival_mask]
-    X_val_s, y_val_time_s, y_val_event_s = X_val[val_survival_mask], y_val_time[val_survival_mask], y_val_event[val_survival_mask] # Val data for survival, not used in fit
+    X_val_s, y_val_time_s, y_val_event_s = X_val[val_survival_mask], y_val_time[val_survival_mask], y_val_event[val_survival_mask] 
     X_test_s, y_test_time_s, y_test_event_s = X_test[test_survival_mask], y_test_time[test_survival_mask], y_test_event[test_survival_mask]
     pids_test_s = [p for i, p in enumerate(pids_test) if test_survival_mask[i]]
     local_indices_test_s = [idx for i, idx in enumerate(local_indices_test) if test_survival_mask[i]]
@@ -676,31 +593,7 @@ def main():
     else:
         logger.warning("Skipping XGBoost Survival model training due to insufficient valid survival data.")
 
-    # --- LightGBM Survival Model ---
-    if X_train_s.shape[0] > 0 and X_test_s.shape[0] > 0: 
-        lgbm_surv = lgb.LGBMRegressor( 
-            objective='coxph',
-            n_estimators=args.lgbm_n_estimators,
-            learning_rate=args.lgbm_learning_rate,
-            num_leaves=args.lgbm_num_leaves,
-            max_depth=args.lgbm_max_depth,
-            min_child_samples=args.lgbm_min_child_samples,
-            random_state=args.random_seed,
-            verbose=-1 
-        )
-        results_lgbm_surv = train_evaluate_lgbm_survival(
-            lgbm_surv, f"LightGBM_TTE_Survival",
-            X_train_s, y_train_time_s, y_train_event_s,
-            X_val_s if X_val_s.shape[0] > 0 else None,
-            y_val_time_s if X_val_s.shape[0] > 0 else None,
-            y_val_event_s if X_val_s.shape[0] > 0 else None,
-            X_test_s, y_test_time_s, y_test_event_s,
-            pids_test_s, local_indices_test_s, args
-        )
-        all_results.append(results_lgbm_surv)
-    else:
-        logger.warning("Skipping LightGBM Survival model training due to insufficient valid survival data.")
-
+    # Removed LightGBM Survival model training section
 
     logger.info(f"\n--- Summary: Final Test Metrics ({args.prediction_horizon_days}-Day Future Prediction & TTE) ---")
     for res in all_results:
@@ -715,20 +608,21 @@ def main():
 
     logger.info(f"\n--- Analyzing First Prediction of {args.prediction_horizon_days}-Day Future Event on Test Set ---")
     all_switch_dfs = []
-    if len(X_test) > 0: 
-        for name, model_obj in trained_classification_models.items():
-            df_preds = predict_label_switches_sklearn(model_obj, X_test, y_test_cls, pids_test, local_indices_test, args.prediction_horizon_days)
-            if not df_preds.empty:
-                df_sw = analyze_switches_Nday_future(df_preds, args.prediction_horizon_days)
-                df_sw["ModelType"] = name
-                all_switch_dfs.append(df_sw)
-                logger.info(f"{args.prediction_horizon_days}-Day Future Event Pred Switch Analysis for {name}:\n{df_sw.head(3)}")
-                valid_diffs = df_sw[f"SwitchDifference_{args.prediction_horizon_days}DayFuture"].dropna()
-                if not valid_diffs.empty: logger.info(f"{name} - Mean SwitchDiff: {valid_diffs.mean():.2f}, Median: {valid_diffs.median():.2f} visits")
+    if len(X_test) > 0 and "XGBoost_Classifier" in trained_classification_models: 
+        name = "XGBoost_Classifier"
+        model_obj = trained_classification_models[name]
+        df_preds = predict_label_switches_sklearn(model_obj, X_test, y_test_cls, pids_test, local_indices_test, args.prediction_horizon_days)
+        if not df_preds.empty:
+            df_sw = analyze_switches_Nday_future(df_preds, args.prediction_horizon_days)
+            df_sw["ModelType"] = name
+            all_switch_dfs.append(df_sw)
+            logger.info(f"{args.prediction_horizon_days}-Day Future Event Pred Switch Analysis for {name}:\n{df_sw.head(3)}")
+            valid_diffs = df_sw[f"SwitchDifference_{args.prediction_horizon_days}DayFuture"].dropna()
+            if not valid_diffs.empty: logger.info(f"{name} - Mean SwitchDiff: {valid_diffs.mean():.2f}, Median: {valid_diffs.median():.2f} visits")
     
     if all_switch_dfs:
         combined_sw_df = pd.concat(all_switch_dfs, ignore_index=True)
-        sw_out_path = os.path.join(f"./{args.prediction_horizon_days}day_future_prediction_outputs", f"all_models_{args.prediction_horizon_days}day_future_switch_analysis_sklearn_lgbm_no_es.csv")
+        sw_out_path = os.path.join(f"./{args.prediction_horizon_days}day_future_prediction_outputs", f"xgboost_only_{args.prediction_horizon_days}day_future_switch_analysis.csv") # Updated filename
         combined_sw_df.to_csv(sw_out_path, index=False)
         logger.info(f"Combined {args.prediction_horizon_days}-day future switch analysis saved to: {sw_out_path}")
 
