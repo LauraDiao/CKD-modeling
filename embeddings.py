@@ -10,7 +10,7 @@ from datetime import datetime
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
-        description="Generate synthetic patient-day notes, map GFR to CKD stages, and generate embeddings using a transformer model."
+        description="Generate patient-day notes, map GFR to CKD stages, and generate embeddings using a transformer model."
     )
     parser.add_argument("--csv", type=str, default="patients_subset_100.csv",
                         help="Path to the main event CSV file.")
