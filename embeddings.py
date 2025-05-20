@@ -63,7 +63,7 @@ def build_demographic_map(df):
     )
     return demographic_map
 
-def generate_synthetic_notes(df, demographic_map, icd_map):
+def generate_notes(df, demographic_map, icd_map):
     events = df[df["DataType"] != "Demographics"].copy()
     grouped = events.groupby(['PatientID', 'EventDate'])
     records = []
@@ -230,7 +230,7 @@ def main():
     print("Demographic mapping:")
     print(demographic_map)
 
-    summary_df = generate_synthetic_notes(df, demographic_map, icd_map)
+    summary_df = generate_notes(df, demographic_map, icd_map)
     # Forward-fill GFR values and compute CKD stage per patient
     summary_df = forward_fill_ckd_stage(summary_df)
     print(summary_df.head())
