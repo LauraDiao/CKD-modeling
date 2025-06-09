@@ -22,8 +22,8 @@ import joblib
 from datetime import timedelta
 
 # changes
-prediction_period = 1095 # 365, 730, 1095
-embedding_size = "/ckd_embeddings_full"
+prediction_period = 1 # 365, 730, 1095
+embedding_size = "/ckd_embeddings_10" # /ckd_embeddings_full
 embedding_path =  "./../../../commonfilesharePHI/slee/ckd" + embedding_size
 years = str(round(prediction_period/365))
 
@@ -387,7 +387,8 @@ def train_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val,
         "logit_0": logit_0_col,
         "logit_1": logit_1_col,
         "prob_positive": y_probs_test,
-        "true_label": y_test_cls
+        "true_label": y_test_cls,
+        
     })
     out_csv_p = os.path.join(output_dir_dets, f"{model_name}_detailed_outputs_classification.csv")
     df_dets.to_csv(out_csv_p, index=False)
@@ -428,6 +429,8 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
         "tte_cox_risk_score": risk_scores_test,
         "tte_cox_true_time": y_test_time_s,
         "tte_cox_true_event": y_test_event_s
+        # dont wrok on the cl metrics, focus on the tte metrics
+        
     })
     out_csv_surv_p = os.path.join(output_dir_dets, f"{model_name}_detailed_outputs_survival.csv")
     df_surv_dets.to_csv(out_csv_surv_p, index=False)
@@ -586,6 +589,7 @@ def main():
     if X_train_s.shape[0] > 0 and X_test_s.shape[0] > 0: 
         xgb_surv = xgb.XGBModel( 
             objective='survival:cox',
+            # eval_metric='cox-nloglik', # leave out 
             n_estimators=args.xgb_n_estimators,
             max_depth=args.xgb_max_depth,
             learning_rate=args.xgb_learning_rate,
