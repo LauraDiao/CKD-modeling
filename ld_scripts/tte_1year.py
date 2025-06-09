@@ -20,6 +20,20 @@ from sklearn.metrics import (
 )
 from datetime import timedelta # Import timedelta
 
+# change variables
+prediction_period = 365 # 365, 730, 1095
+embedding_size = "full" # 10, 100, full
+embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
+years = str(round(prediction_period/365))
+window_size = 50
+
+# script_folder = f"tte_{years}year_embeddings_{embedding_size}_files"
+# try:
+#     os.mkdir(script_folder)
+# except FileExistsError:
+#     pass
+# end of variables
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s: %(message)s',
@@ -33,8 +47,8 @@ logger = logging.getLogger(__name__)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="CKD classification (1-year future window) and time-to-event training with DeepSurv models.")
-    parser.add_argument("--embedding-root", type=str, default="./ckd_embeddings_full", help="Path to embeddings.")
-    parser.add_argument("--window-size", type=int, default=50, help="Sequence window size.")
+    parser.add_argument("--embedding-root", type=str, default= embedding_path, help="Path to embeddings.")
+    parser.add_argument("--window-size", type=int, default=window_size, help="Sequence window size.")
     parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of embeddings.")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per model.")
     parser.add_argument("--batch-size", type=int, default=64, help="Batch size.")
@@ -53,7 +67,7 @@ def parse_args():
     parser.add_argument("--max-patients", type=int, default=None, help="If set, only load embeddings for up to this many patients.")
     parser.add_argument("--output-model-prefix", type=str, default="best_model_1yr_future", help="Filename prefix for saved models.")
     parser.add_argument("--log-tte", action="store_true", help="Apply log transformation to time-to-event targets for Cox loss.")
-    parser.add_argument("--prediction-horizon-days", type=int, default=365, help="Number of days into the future to check for an event for label generation.")
+    parser.add_argument("--prediction-horizon-days", type=int, default=prediction_period, help="Number of days into the future to check for an event for label generation.")
     parser.add_argument("--cox-loss-weight", type=float, default=1.0, help="Weight for the Cox PH loss in DeepSurv models.")
     return parser.parse_args()
 

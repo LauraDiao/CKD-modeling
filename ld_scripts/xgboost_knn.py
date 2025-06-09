@@ -21,11 +21,19 @@ import xgboost as xgb
 import joblib
 from datetime import timedelta
 
-# changes
-prediction_period = 1 # 365, 730, 1095
-embedding_size = "/ckd_embeddings_10" # /ckd_embeddings_full
-embedding_path =  "./../../../commonfilesharePHI/slee/ckd" + embedding_size
+# change variables
+prediction_period = 365 # 365, 730, 1095
+embedding_size = "full" # 10, 100, full
+embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
 years = str(round(prediction_period/365))
+window_size = 50
+
+# script_folder = f"xgb_{years}year_embeddings_{embedding_size}_files"
+# try:
+#     os.mkdir(script_folder)
+# except FileExistsError:
+#     pass
+# end of variables
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,7 +49,7 @@ logger = logging.getLogger(__name__)
 def parse_args():
     parser = argparse.ArgumentParser(description="CKD classification (n-year future window) and time-to-event training with XGBoost models (no early stopping).") # Updated description
     parser.add_argument("--embedding-root", type=str, default=embedding_path, help="Path to embeddings.")
-    parser.add_argument("--window-size", type=int, default=10, help="Sequence window size.")
+    parser.add_argument("--window-size", type=int, default=window_size, help="Sequence window size.")
     parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of embeddings.")
     parser.add_argument("--metadata-file", type=str, default="patient_embedding_metadata.csv", help="CSV with metadata.")
     parser.add_argument("--random-seed", type=int, default=42, help="Random seed.")
@@ -411,6 +419,8 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
     logger.info(f"{model_name}: Survival model saved to {model_path}")
 
     risk_scores_test = model.predict(X_test_s) 
+    # changes for surv_results
+    y_probs_test = model.predict_proba(X_test_s)[:, 1]
 
     final_results_dict = {"model_name": model_name + "_Survival"}
     if len(y_test_time_s) > 1 and np.sum(y_test_event_s) > 0:
@@ -426,6 +436,8 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
     df_surv_dets = pd.DataFrame({
         "PatientID": pids_test_s,
         "LocalIndex": local_indices_test_s,
+        "cl_prob_1":  y_probs_test,
+        "cl_true_label": y_test_event_s, # This is 'label_ckd_1_year_future'
         "tte_cox_risk_score": risk_scores_test,
         "tte_cox_true_time": y_test_time_s,
         "tte_cox_true_event": y_test_event_s
