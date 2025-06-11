@@ -22,8 +22,8 @@ import joblib
 from datetime import timedelta
 
 # change variables
-prediction_period = 365 # 365, 730, 1095
-embedding_size = "full" # 10, 100, full
+prediction_period = 1 # 365, 730, 1095
+embedding_size = "10" # 10, 100, full
 embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
 years = str(round(prediction_period/365))
 window_size = 50
@@ -407,7 +407,9 @@ def train_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val,
 def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s, y_train_event_s, 
                                    X_val_s, y_val_time_s, y_val_event_s,
                                    X_test_s, y_test_time_s, y_test_event_s, 
-                                   pids_test_s, local_indices_test_s, args):
+                                   pids_test_s, local_indices_test_s, 
+                                   y_test_cls_s,
+                                   args):
     logger.info(f"Starting {model_name} training (Survival TTE to first progression).")
     y_train_xgb_surv = np.where(y_train_event_s == 1, y_train_time_s, -y_train_time_s)
     
@@ -418,9 +420,8 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
     joblib.dump(model, model_path)
     logger.info(f"{model_name}: Survival model saved to {model_path}")
 
-    risk_scores_test = model.predict(X_test_s) 
-    # changes for surv_results
-    y_probs_test = model.predict_proba(X_test_s)[:, 1]
+    risk_scores_test = model.predict(X_test_s)
+    cl_prob_1_survival = 1 / (1 + np.exp(-risk_scores_test)) # sigmoid function
 
     final_results_dict = {"model_name": model_name + "_Survival"}
     if len(y_test_time_s) > 1 and np.sum(y_test_event_s) > 0:
@@ -436,12 +437,11 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
     df_surv_dets = pd.DataFrame({
         "PatientID": pids_test_s,
         "LocalIndex": local_indices_test_s,
-        "cl_prob_1":  y_probs_test,
-        "cl_true_label": y_test_event_s, # This is 'label_ckd_1_year_future'
+        "cl_prob_1":  cl_prob_1_survival, 
+        "cl_true_label": y_test_cls_s,
         "tte_cox_risk_score": risk_scores_test,
         "tte_cox_true_time": y_test_time_s,
         "tte_cox_true_event": y_test_event_s
-        # dont wrok on the cl metrics, focus on the tte metrics
         
     })
     out_csv_surv_p = os.path.join(output_dir_dets, f"{model_name}_detailed_outputs_survival.csv")
@@ -597,6 +597,9 @@ def main():
     pids_test_s = [p for i, p in enumerate(pids_test) if test_survival_mask[i]]
     local_indices_test_s = [idx for i, idx in enumerate(local_indices_test) if test_survival_mask[i]]
 
+    #  true classification labels for the test set (before the survival mask is applied)
+    y_test_cls_s = y_test_cls[test_survival_mask]
+
     # --- XGBoost Survival Model ---
     if X_train_s.shape[0] > 0 and X_test_s.shape[0] > 0: 
         xgb_surv = xgb.XGBModel( 
@@ -614,7 +617,9 @@ def main():
             y_val_time_s if X_val_s.shape[0] > 0 else None, 
             y_val_event_s if X_val_s.shape[0] > 0 else None,
             X_test_s, y_test_time_s, y_test_event_s,
-            pids_test_s, local_indices_test_s, args
+            pids_test_s, local_indices_test_s,
+            y_test_cls_s,
+            args
         )
         all_results.append(results_xgb_surv)
     else:
