@@ -39,7 +39,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler("full_deepserv_tte_1year_future_50window.log", mode='w'),
+        logging.FileHandler(f"full_deepserv_tte_{years}year_future_50window.log", mode='w'),
         logging.StreamHandler()
     ]
 )
@@ -106,7 +106,7 @@ def pad_sequence(seq, length, dim):
 
     return np.stack(processed_seq, axis=0)
 
-def add_future_event_label_column(df, source_label_col, new_label_col, date_col='EventDate', patient_id_col='PatientID', horizon_days=365):
+def add_future_event_label_column(df, source_label_col, new_label_col, date_col='EventDate', patient_id_col='PatientID', horizon_days=prediction_period):
     logger.info(f"Generating '{new_label_col}' based on '{source_label_col}' over a {horizon_days}-day future window.")
     df[new_label_col] = 0  # Initialize with 0
     df[date_col] = pd.to_datetime(df[date_col])
@@ -763,6 +763,8 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.scheduler_patience, verbose=False)
     classification_criterion = nn.CrossEntropyLoss()
     cox_loss_w = args.cox_loss_weight
+    
+    # print(test_loader)
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
