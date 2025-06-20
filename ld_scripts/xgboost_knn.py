@@ -22,8 +22,8 @@ import joblib
 from datetime import timedelta
 
 # change variables
-prediction_period = 360 # 365, 730, 1095
-embedding_size = "full" # 10, 100, full
+prediction_period = 1 # 365, 730, 1095
+embedding_size = "10" # 10, 100, full
 embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
 years = str(round(prediction_period/365))
 window_size = 50
@@ -413,11 +413,12 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
     logger.info(f"Starting {model_name} training (Survival TTE to first progression).")
     y_train_xgb_surv = np.where(y_train_event_s == 1, y_train_time_s, -y_train_time_s)
     # change
+    # cl_true_label
     y_test_xgb_surv = np.where(y_test_event_s == 1, y_test_time_s, -y_test_time_s)
     
-    # model.fit(X_train_s, y_train_xgb_surv)
+    model.fit(X_train_s, y_train_xgb_surv)
     # change
-    model.fit(X_train_s, y_train_time_s, sample_weight = y_train_event_s)
+    # model.fit(X_train_s, y_train_time_s, sample_weight = y_train_event_s)
     logger.info(f"{model_name}: Trained for specified number of estimators.")
 
     model_path = f"{args.output_model_prefix}_{model_name}.joblib"
@@ -426,7 +427,7 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
 
     # change
     risk_scores_test = model.predict(X_test_s)
-    # cl_prob_1_survival = 1 / (1 + np.exp(-risk_scores_test)) # sigmoid function
+    cl_prob_1_survival = 1 / (1 + np.exp(-risk_scores_test)) # sigmoid function
 
     final_results_dict = {"model_name": model_name + "_Survival"}
     if len(y_test_time_s) > 1 and np.sum(y_test_event_s) > 0:
@@ -443,7 +444,7 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
         "PatientID": pids_test_s,
         "LocalIndex": local_indices_test_s,
         "cl_prob_1":  risk_scores_test, 
-        "cl_true_label_": y_test_cls_s,
+        # "cl_true_label": y_test_cls_s,
         "cl_true_label": y_test_xgb_surv,
         "tte_cox_risk_score": risk_scores_test,
         "tte_cox_true_time": y_test_time_s,
