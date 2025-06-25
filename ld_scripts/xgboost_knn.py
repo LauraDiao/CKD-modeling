@@ -40,7 +40,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler(f"xgboost_only_model_tte_{years}year_future.log", mode='w'), # Updated log file name
+        logging.FileHandler(f"./log_files/xgboost_only_model_tte_{years}year_future.log", mode='w'), # Updated log file name
         logging.StreamHandler()
     ]
 )
@@ -345,7 +345,7 @@ def prepare_sklearn_data(sequence_records, window_size, embed_dim, for_survival=
         return X_array, y_cls_array, pids_list, local_indices_list
 
 
-def train_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val, X_test, y_test_cls, pids_test, local_indices_test, args):
+def train_and_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val, X_test, y_test_cls, pids_test, local_indices_test, args):
     logger.info(f"Starting {model_name} training (Classification: {args.prediction_horizon_days}-day future label).")
     
     model.fit(X_train, y_train)
@@ -404,7 +404,7 @@ def train_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val,
     
     return final_results_dict, model
 
-def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s, y_train_event_s, 
+def train_and_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s, y_train_event_s, 
                                    X_val_s, y_val_time_s, y_val_event_s,
                                    X_test_s, y_test_time_s, y_test_event_s, 
                                    pids_test_s, local_indices_test_s, 
@@ -412,13 +412,18 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
                                    args):
     logger.info(f"Starting {model_name} training (Survival TTE to first progression).")
     y_train_xgb_surv = np.where(y_train_event_s == 1, y_train_time_s, -y_train_time_s)
+
     # change
-    # cl_true_label
-    y_test_xgb_surv = np.where(y_test_event_s == 1, y_test_time_s, -y_test_time_s)
+    # true_label 1
+    # surv_true_label = y_test_cls_s
+    # true_label 2
+    surv_true_label = np.where(y_test_event_s == 1, y_test_time_s, -y_test_time_s)
     
+    # fit 1
     model.fit(X_train_s, y_train_xgb_surv)
-    # change
+    # fit 2
     # model.fit(X_train_s, y_train_time_s, sample_weight = y_train_event_s)
+    
     logger.info(f"{model_name}: Trained for specified number of estimators.")
 
     model_path = f"{args.output_model_prefix}_{model_name}.joblib"
@@ -444,8 +449,7 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
         "PatientID": pids_test_s,
         "LocalIndex": local_indices_test_s,
         "cl_prob_1":  risk_scores_test, 
-        # "cl_true_label": y_test_cls_s,
-        "cl_true_label": y_test_xgb_surv,
+        "cl_true_label": surv_true_label,
         "tte_cox_risk_score": risk_scores_test,
         "tte_cox_true_time": y_test_time_s,
         "tte_cox_true_event": y_test_event_s
@@ -457,7 +461,7 @@ def train_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_time_s
 
     return final_results_dict
 
-# Removed train_evaluate_lgbm_survival function
+# Removed train_and_evaluate_lgbm_survival function
 
 def predict_label_switches_sklearn(model, X_data, y_true_labels, pids, local_indices, N_days_horizon):
     preds = model.predict(X_data) 
@@ -586,7 +590,7 @@ def main():
         eval_metric='logloss', 
         random_state=args.random_seed
     )
-    results_xgb_cls, trained_xgb_cls = train_evaluate_classifier(
+    results_xgb_cls, trained_xgb_cls = train_and_evaluate_classifier(
         xgb_clf, f"XGBoost_{args.prediction_horizon_days}DayFuture_Classifier",
         X_train, y_train_cls, X_val, y_val_cls, X_test, y_test_cls, 
         pids_test, local_indices_test, args
@@ -618,7 +622,7 @@ def main():
             learning_rate=args.xgb_learning_rate,
             random_state=args.random_seed,
         )
-        results_xgb_surv = train_evaluate_xgboost_survival(
+        results_xgb_surv = train_and_evaluate_xgboost_survival(
             xgb_surv, f"XGBoost_TTE_Survival",
             X_train_s, y_train_time_s, y_train_event_s,
             X_val_s if X_val_s.shape[0] > 0 else None, 

@@ -786,7 +786,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
-    best_model_path = f"{args.output_model_prefix}_{model_name}.pt"
+    best_model_path = f"./pt_files/{args.output_model_prefix}_{model_name}.pt"
     os.makedirs(os.path.dirname(best_model_path) or ".", exist_ok=True)
 
 
@@ -796,26 +796,26 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         for batch in train_loader:
             optimizer.zero_grad()
             # context, classification_target, pid, local_idx, tte_value
-            x_batch, classification_target_batch, _, _, tte_batch = batch # Unpack 5 items
+            x_batch, classification_target, pid_batch, _, tte_cox= batch # Unpack 5 items
             
             x_batch = x_batch.to(device)
-            classification_target_batch = classification_target_batch.to(device) # This is used as 'event' for Cox
-            tte_batch = tte_batch.to(device)
+            classification_target = classification_target.to(device) # This is used as 'event' for Cox
+            tte_cox = tte_cox.to(device)
             
             logits, risk = model(x_batch) # Model returns (classification_logits, risk_pred_for_tte)
             
             # Survival loss for TTE (time_until_progression)
             # Mask for valid TTE data (non-NaN time and non-NaN risk)
-            # The 'event' for this Cox loss is `classification_target_batch` (label_ckd_{years}_year_future)
-            mask = ~torch.isnan(tte_batch) & ~torch.isnan(risk) & ~torch.isnan(classification_target_batch.float())
+            # The 'event' for this Cox loss is `classification_target` (label_ckd_{years}_year_future)
+            mask = ~torch.isnan(tte_cox) & ~torch.isnan(risk) & ~torch.isnan(classification_target.float())
 
             surv_loss = torch.tensor(0.0, device=device)
             if mask.sum() > 0:
-                # Ensure classification_target_batch is float for cox_ph_loss's event_observed
-                surv_loss = cox_ph_loss(risk[mask], tte_batch[mask], classification_target_batch[mask].float()) 
+                # Ensure classification_target is float for cox_ph_loss's event_observed
+                surv_loss = cox_ph_loss(risk[mask], tte_cox[mask], classification_target[mask].float()) 
             
             # Classification loss for the 1-year future label
-            class_loss = classification_criterion(logits, classification_target_batch.long())
+            class_loss = classification_criterion(logits, classification_target.long())
             
             total_loss = surv_loss + classification_loss_weight * class_loss # Combine losses
             
@@ -836,19 +836,19 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         val_total_losses, val_class_losses, val_surv_losses = [], [], []
         with torch.no_grad():
             for batch in val_loader:
-                x_batch, classification_target_batch, _, _, tte_batch = batch
+                x_batch, classification_target, _, _, tte_cox = batch
                 x_batch = x_batch.to(device)
-                classification_target_batch = classification_target_batch.to(device)
-                tte_batch = tte_batch.to(device)
+                classification_target = classification_target.to(device)
+                tte_cox = tte_cox.to(device)
                 
                 logits, risk = model(x_batch)
                 
-                mask = ~torch.isnan(tte_batch) & ~torch.isnan(risk) & ~torch.isnan(classification_target_batch.float())
+                mask = ~torch.isnan(tte_cox) & ~torch.isnan(risk) & ~torch.isnan(classification_target.float())
                 surv_loss_val = torch.tensor(0.0, device=device)
                 if mask.sum() > 0:
-                    surv_loss_val = cox_ph_loss(risk[mask], tte_batch[mask], classification_target_batch[mask].float())
+                    surv_loss_val = cox_ph_loss(risk[mask], tte_cox[mask], classification_target[mask].float())
                 
-                class_loss_val = classification_criterion(logits, classification_target_batch.long())
+                class_loss_val = classification_criterion(logits, classification_target.long())
                 total_loss_val = surv_loss_val + classification_loss_weight * class_loss_val
                 
                 if not (torch.isnan(total_loss_val) or torch.isinf(total_loss_val)):
@@ -892,11 +892,13 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
 
     model.eval()
     all_cl_logits_test, all_risk_scores_test = [], []
-    all_classification_targets_test, all_tte_times_test = [], [] # TTE times from tte_batch
+    all_classification_targets_test, all_tte_times_test = [], [] # TTE times from tte_cox
+    all_event_cox_test = []
+    all_pids_test = [] 
 
     with torch.no_grad():
         for batch in test_loader:
-            x_batch, classification_target_b, _, _, tte_b = batch
+            x_batch, classification_target_b, pid_batch_t, _, tte_b = batch
             x_batch = x_batch.to(device)
             
             logits, risk = model(x_batch) # (classification_logits, risk_for_tte)
@@ -905,6 +907,9 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
             all_risk_scores_test.extend(risk.cpu().numpy())
             all_classification_targets_test.extend(classification_target_b.numpy()) # This is label_ckd_{years}_year_future
             all_tte_times_test.extend(tte_b.numpy()) # This is time_until_progression
+            # change 
+            all_event_cox_test.extend(classification_target_b.cpu().numpy())
+            all_pids_test.extend(pid_batch_t)  
 
     all_cl_logits_test = np.array(all_cl_logits_test)
     all_risk_scores_test = np.array(all_risk_scores_test)
@@ -961,12 +966,16 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
     os.makedirs(os.path.join(output_dir, f"results_tabular_{years}yr"), exist_ok=True) # Specific folder
     
     df_output_details = pd.DataFrame({
+        # change
+        "PatientID": all_pids_test,  
         "cl_logit_0": all_cl_logits_test[:, 0] if all_cl_logits_test.ndim == 2 else np.nan,
         "cl_logit_1": all_cl_logits_test[:, 1] if all_cl_logits_test.ndim == 2 else np.nan,
         "cl_prob_1": all_cl_probs_test,
-        f"cl_true_label_{years}yr_future": all_classification_targets_test,
-        "risk_score_tte": all_risk_scores_test,
-        "time_for_tte": all_tte_times_test
+        "cl_true_label": all_classification_targets_test,
+        "tte_cox_risk_score": all_risk_scores_test,
+        "tte_cox_true_time": all_tte_times_test,
+        # change: for surv_results
+        "tte_cox_true_event": all_event_cox_test # or all_classification_targets_test,
     })
     df_output_details.to_csv(os.path.join(output_dir, f"results_tabular_{years}yr", f"tab_{model_name}_deepsurv_outputs.csv"), index=False)
     logger.info(f"{model_name}: Detailed outputs saved to results_tabular_{years}yr/tab_{model_name}_deepsurv_outputs.csv")
@@ -983,7 +992,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     
     best_val_loss = float('inf')
     epochs_no_improve = 0
-    best_model_path = f"{args.output_model_prefix}_{model_name}.pt"
+    best_model_path = f"./pt_files/{args.output_model_prefix}_{model_name}.pt"
     os.makedirs(os.path.dirname(best_model_path) or ".", exist_ok=True)
 
 
@@ -1048,15 +1057,17 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     model.eval()
     all_cl_probs_test, all_cl_targets_test = [], []
     all_cl_logits_test = []
+    all_pids_test = []  # change
     with torch.no_grad():
         for batch in test_loader:
-            x_batch, y_batch, _, _ = batch
+            x_batch, y_batch, pid_batch_t, _ = batch # change
             x_batch = x_batch.to(device)
             logits = model(x_batch)
             probs = nn.Softmax(dim=1)(logits)
             all_cl_probs_test.extend(probs[:, 1].cpu().numpy()) # Prob of class 1
             all_cl_targets_test.extend(y_batch.numpy())
             all_cl_logits_test.extend(logits.cpu().numpy())
+            all_pids_test.extend(pid_batch_t) 
             
     all_cl_targets_test = np.array(all_cl_targets_test)
     all_cl_probs_test = np.array(all_cl_probs_test)
@@ -1083,6 +1094,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     output_dir = os.path.dirname(args.output_model_prefix) or "."
     os.makedirs(os.path.join(output_dir, f"results_tabular_{years}yr"), exist_ok=True)
     df_output_details = pd.DataFrame({
+        "PatientID": all_pids_test,  
         "logit_0": all_cl_logits_test[:, 0] if all_cl_logits_test.ndim == 2 else np.nan,
         "logit_1": all_cl_logits_test[:, 1] if all_cl_logits_test.ndim == 2 else np.nan,
         f"prob_positive_{years}yr_future": all_cl_probs_test,
