@@ -25,14 +25,15 @@ prediction_period = 365 # 365, 730, 1095
 tab_size = "/ckd_processed_tab_full.csv"
 tab_path =  "./../../../commonfilesharePHI/slee/ckd-optum" + tab_size
 years = str(round(prediction_period/365))
-# target_label_col=f'label_ckd_{years}_year_future' # note
+# target_label_col=f'label_ckd_{years}_year_future' # remove
+mod_output_dir = "_filter_stage_3" # ""
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler(f"full_tab_deepserv_{years}year_future.log", mode='w'), # Updated log file name
+        logging.FileHandler(f"./log_files/full_tab_deepserv_{years}year_future.log", mode='w'), # Updated log file name
         logging.StreamHandler()
     ]
 )
@@ -80,6 +81,18 @@ def clean_ckd_stage(value):
     except TypeError: # Handles if value is already NaN or None
         return np.nan
 
+def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
+    initial_patients = df[patient_id_col].nunique()
+    # Filter for visits where CKD stage is 3 or higher
+    df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
+    # Get unique PatientIDs from this filtered DataFrame
+    patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
+    
+    patients_removed = initial_patients - len(patient_ids_to_keep)
+    logger.info(f"Identified {len(patient_ids_to_keep)} patients with at least one visit at or above CKD stage 3.")
+    logger.info(f"Filtered out approximately {patients_removed} patients who are always below CKD stage 3.")
+    
+    return patient_ids_to_keep
 
 # This function is from the previous script to generate the 1-year future label
 def add_future_event_label_column(df, source_label_col, new_label_col, date_col='EventDate', patient_id_col='PatientID', horizon_days=365):
@@ -963,7 +976,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
 
     # Save detailed outputs
     output_dir = os.path.dirname(args.output_model_prefix) or "."
-    os.makedirs(os.path.join(output_dir, f"results_tabular_{years}yr"), exist_ok=True) # Specific folder
+    os.makedirs(os.path.join(output_dir, f"results_tabular_{years}yr" + mod_output_dir), exist_ok=True) # Specific folder
     
     df_output_details = pd.DataFrame({
         # change
@@ -1092,13 +1105,13 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         logger.warning(f"{model_name}: No classification targets in test set for evaluation.")
 
     output_dir = os.path.dirname(args.output_model_prefix) or "."
-    os.makedirs(os.path.join(output_dir, f"results_tabular_{years}yr"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, f"results_tabular_{years}yr" + mod_output_dir), exist_ok=True)
     df_output_details = pd.DataFrame({
         "PatientID": all_pids_test,  
         "logit_0": all_cl_logits_test[:, 0] if all_cl_logits_test.ndim == 2 else np.nan,
         "logit_1": all_cl_logits_test[:, 1] if all_cl_logits_test.ndim == 2 else np.nan,
-        f"prob_positive_{years}yr_future": all_cl_probs_test,
-        f"true_label_{years}yr_future": all_cl_targets_test
+        f"prob_positive": all_cl_probs_test,
+        f"true_label": all_cl_targets_test
     })
     df_output_details.to_csv(os.path.join(output_dir, f"results_tabular_{years}yr", f"tab_{model_name}_classification_outputs.csv"), index=False)
     logger.info(f"{model_name}: Detailed classification outputs saved to results_tabular_{years}yr/tab_{model_name}_classification_outputs.csv")
@@ -1192,6 +1205,13 @@ def main():
     else:
         logger.error("'CKD_stage' column not found in tabular data. Cannot proceed with label generation.")
         return
+
+    # change 
+    # filter patients
+    metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
+    metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
+    logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
+    
 
     # Label 1: Current CKD stage >= 4
     metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_cleaned'].apply(lambda x: 1 if x >= 4 else 0)
@@ -1388,7 +1408,7 @@ def main():
     # Analyze Switches
     logger.info(f"\n--- Analyzing First Prediction of {args.prediction_horizon_days}-Day Future Event on Test Set (Tabular Models) ---")
     all_switch_dfs_tabular = []
-    output_dir_results = os.path.join(os.path.dirname(args.output_model_prefix) or ".", f"results_tabular_{years}yr")
+    output_dir_results = os.path.join(os.path.dirname(args.output_model_prefix) or ".", f"results_tabular_{years}yr" + mod_output_dir)
 
 
     if args.epochs > 0: # Only if models were trained

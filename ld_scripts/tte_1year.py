@@ -26,20 +26,14 @@ embedding_size = "full" # 10, 100, full
 embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
 years = str(round(prediction_period/365))
 window_size = 50
-
-# script_folder = f"tte_{years}year_embeddings_{embedding_size}_files"
-# try:
-#     os.mkdir(script_folder)
-# except FileExistsError:
-#     pass
-# end of variables
+mod_output_dir = "_filter_stage_3" # ""
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler(f"full_deepserv_tte_{years}year_future_50window.log", mode='w'),
+        logging.FileHandler(f"./log_files/full_deepserv_tte_{years}year_future_50window.log", mode='w'),
         logging.StreamHandler()
     ]
 )
@@ -79,6 +73,19 @@ def clean_ckd_stage(value):
             return int(value[0])
         else:
             return np.nan
+
+def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
+    initial_patients = df[patient_id_col].nunique()
+    # Filter for visits where CKD stage is 3 or higher
+    df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
+    # Get unique PatientIDs from this filtered DataFrame
+    patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
+    
+    patients_removed = initial_patients - len(patient_ids_to_keep)
+    logger.info(f"Identified {len(patient_ids_to_keep)} patients with at least one visit at or above CKD stage 3.")
+    logger.info(f"Filtered out approximately {patients_removed} patients who are always below CKD stage 3.")
+    
+    return patient_ids_to_keep
 
 def embedding_exists(row, root):
     return os.path.exists(os.path.join(root, row["embedding_file"]))
@@ -763,15 +770,15 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.scheduler_patience, verbose=False)
     classification_criterion = nn.CrossEntropyLoss()
     cox_loss_w = args.cox_loss_weight
-    
+   
     # print(test_loader)
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
-    model_dir = os.path.dirname(f"{args.output_model_prefix}_{model_name}.pt")
+    model_dir = os.path.dirname(f"./pt_files/{args.output_model_prefix}_{model_name}.pt")
     if model_dir == "": model_dir = "."  
     os.makedirs(model_dir, exist_ok=True)
-    best_model_path = f"{args.output_model_prefix}_{model_name}.pt"
+    best_model_path = f"./pt_files/{args.output_model_prefix}_{model_name}.pt"
 
     for epoch in range(args.epochs):
         model.train()
@@ -931,7 +938,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         logger.warning(f"{model_name}: Not enough valid data or no events to calculate C-index for TTE.")
         final_results_dict["concordance_index_tte"] = np.nan
 
-    output_dir_details = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50"
+    output_dir_details = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + mod_output_dir
     os.makedirs(output_dir_details, exist_ok=True)
     df_details = pd.DataFrame({
         "PatientID": all_pids_test,  
@@ -960,11 +967,11 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
 
     best_val_loss = float('inf')
     epochs_no_improve = 0
-    model_dir = os.path.dirname(f"{args.output_model_prefix}_{model_name}.pt")
+    model_dir = os.path.dirname(f"./pt_files/{args.output_model_prefix}_{model_name}.pt")
     if model_dir == "":
         model_dir = "."
     os.makedirs(model_dir, exist_ok=True)
-    best_model_path = f"{args.output_model_prefix}_{model_name}.pt"
+    best_model_path = f"./pt_files/{args.output_model_prefix}_{model_name}.pt"
 
     for epoch in range(args.epochs):
         model.train()
@@ -1060,7 +1067,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     else:
         logger.warning(f"{model_name}: No targets in test set for evaluation.")
 
-    output_dir_dets = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50"
+    output_dir_dets = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + mod_output_dir
     os.makedirs(output_dir_dets, exist_ok=True)
     df_dets = pd.DataFrame({
         "PatientID": all_pids_test,  
@@ -1156,6 +1163,12 @@ def main():
     metadata['CKD_stage_clean'] = metadata.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
     metadata = metadata.dropna(subset=['CKD_stage_clean']) # Drop rows where stage is still NaN
     metadata['CKD_stage_clean'] = metadata['CKD_stage_clean'].astype(int)
+    
+    # change 
+    # filter patients
+    metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
+    metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
+    logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
     
     # --- Start of Label Generation ---
     # Label 1: CKD stage 4 and above at the current visit
