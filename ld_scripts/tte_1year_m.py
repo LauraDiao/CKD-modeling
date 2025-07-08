@@ -1071,10 +1071,10 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     os.makedirs(output_dir_dets, exist_ok=True)
     df_dets = pd.DataFrame({
         "PatientID": all_pids_test,  
-        "logit_0": all_logits_test[:, 0] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
-        "logit_1": all_logits_test[:, 1] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
-        "prob_positive": all_probs_test,
-        "true_label": all_targets_test # This is 'label_ckd_1_year_future'
+        "cl_logit_0": all_logits_test[:, 0] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
+        "cl_logit_1": all_logits_test[:, 1] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
+        "cl_prob_1": all_probs_test, # "prob_positive"
+        "cl_true_label": all_targets_test # This is 'label_ckd_1_year_future'
     })
     out_csv_p = os.path.join(output_dir_dets, f"{model_name}_detailed_outputs.csv")
     df_dets.to_csv(out_csv_p, index=False)

@@ -1108,10 +1108,10 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     os.makedirs(os.path.join(output_dir, f"results_tabular_{years}yr" + mod_output_dir), exist_ok=True)
     df_output_details = pd.DataFrame({
         "PatientID": all_pids_test,  
-        "logit_0": all_cl_logits_test[:, 0] if all_cl_logits_test.ndim == 2 else np.nan,
-        "logit_1": all_cl_logits_test[:, 1] if all_cl_logits_test.ndim == 2 else np.nan,
-        f"prob_positive": all_cl_probs_test,
-        f"true_label": all_cl_targets_test
+        "cl_logit_0": all_cl_logits_test[:, 0] if all_cl_logits_test.ndim == 2 else np.nan,
+        "cl_logit_1": all_cl_logits_test[:, 1] if all_cl_logits_test.ndim == 2 else np.nan,
+        f"cl_prob_1": all_cl_probs_test, # "prob_positive"
+        f"cl_true_label": all_cl_targets_test
     })
     df_output_details.to_csv(os.path.join(output_dir, f"results_tabular_{years}yr", f"tab_{model_name}_classification_outputs.csv"), index=False)
     logger.info(f"{model_name}: Detailed classification outputs saved to results_tabular_{years}yr/tab_{model_name}_classification_outputs.csv")
@@ -1205,7 +1205,7 @@ def main():
     else:
         logger.error("'CKD_stage' column not found in tabular data. Cannot proceed with label generation.")
         return
-
+true
     # change 
     # filter patients
     metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')

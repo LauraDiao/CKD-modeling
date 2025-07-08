@@ -24,12 +24,15 @@ from datetime import timedelta
 import warnings
 
 # change variables
-prediction_period = 1 # 365, 730, 1095
-embedding_size = "10" # 10, 100, full
+prediction_period = 365 # 365, 730, 1095
+embedding_size = "full" # 10, 100, full
 embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
 years = str(round(prediction_period/365))
 window_size = 50
-mod_output_dir = "_filter_stage_3" # ""
+filtering_stage = False
+mod_output_dir = ""
+if filtering_stage: 
+    mod_output_dir = "_filter_stage_3" # ""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -411,10 +414,10 @@ def train_and_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_
     df_dets = pd.DataFrame({
         "PatientID": pids_test,
         "LocalIndex": local_indices_test,
-        "logit_0": logit_0_col,
-        "logit_1": logit_1_col,
-        "prob_positive": y_probs_test,
-        "true_label": y_test_cls,
+        "cl_logit_0": logit_0_col,
+        "cl_logit_1": logit_1_col,
+        "cl_prob_1": y_probs_test, # "prob_positive"
+        "cl_true_label": y_test_cls,
         
     })
     out_csv_p = os.path.join(output_dir_dets, f"{model_name}_detailed_outputs_classification.csv")
@@ -548,10 +551,10 @@ def main():
     logger.info(f"Rows after CKD stage cleaning & 'label' creation: {len(metadata)}")
 
     # change 
-    # filter patients
-    metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
-    metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
-    logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
+    if filtering_stage: 
+        metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
+        metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
+        logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
     
     logger.info("Filtering for existing embedding files...")
     metadata = metadata[metadata.apply(lambda row: embedding_exists(row, args.embedding_root), axis=1)]
