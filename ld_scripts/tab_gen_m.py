@@ -3,10 +3,16 @@ from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
 from tqdm import tqdm
 import re
 
+# change variables
+event_path =  "./../../../commonfilesharePHI/slee/ckd-optum/" 
+event_file = "patients_subset_all.csv" # 10, 100, all
+output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
+output_dir_m = output_path + "ckd_tab_m_full" # 10, 100, full
+
 # -----------------------------
 # Load and preprocess
 # -----------------------------
-df = pd.read_csv("patients_subset_all.csv", low_memory=False).drop_duplicates()
+df = pd.read_csv(event_path, low_memory=False).drop_duplicates()
 df['EventTimeStamp'] = pd.to_datetime(df['EventTimeStamp'], errors='coerce')
 df['EventDate'] = df['EventTimeStamp'].dt.date
 df['DataCategory'] = df['DataCategory'].fillna('None')
@@ -155,4 +161,5 @@ base_df = pd.merge(base_df, demo_df, on="PatientID", how="left")
 print("[INFO] Final tabular shape:", base_df.shape)
 print("[INFO] Sample features:\n", base_df.head())
 print("[INFO] CKD stage counts:\n", base_df["CKD_stage"].value_counts(dropna=False))
-base_df.to_csv("ckd_processed_tab_full.csv", index=False)
+base_df_path = os.path.join(output_dir_m, "ckd_processed_tab_full.csv")
+base_df.to_csv(base_df_path, index=False)
