@@ -10,22 +10,30 @@ from datetime import datetime
 
 # change variables
 event_path =  "./../../../commonfilesharePHI/slee/ckd-optum/" 
-event_file = "patients_subset_all.csv" # 10, 100, all
-model_name_m = ""
+# event_file = event_path + "patients_subset_100.csv" # 10, 100, all
+
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-output_dir_m = output_path + "ckd_embeddings_m_full" # 10, 100, full
+output_dir_m = output_path + "ckd_embeddings_m_100" # 10, 100, full
+output_fname = 'patient_embedding_metadata.csv'
+
+event_file =  "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt" # path to all data
+
+try:
+    os.mkdir(output_dir_m)
+except FileExistsError:
+    pass
 
 def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Generate synthetic patient-day notes, map GFR to CKD stages, and generate embeddings using a transformer model."
     )
-    parser.add_argument("--csv", type=str, default="patients_subset_all.csv",
+    parser.add_argument("--csv", type=str, default=event_file,
                         help="Path to the main event CSV file.")
-    parser.add_argument("--icd", type=str, default="icd_mapping.csv",
+    parser.add_argument("--icd", type=str, default=event_path + "icd_mapping.csv",
                         help="Path to the ICD mapping CSV file.")
     parser.add_argument("--output_dir", type=str, default=output_dir_m,
                         help="Directory in which to save the generated embeddings and metadata.")
-    parser.add_argument("--model_name", type=str, default="/opt/data/commonfilesharePHI/slee/GeneratEHR/clinicalBERT-emily",
+    parser.add_argument("--model_name", type=str, default="/opt/data/commonfilesharePHI/slee/MEME/clinicalBERT-emily",
                         help="Pretrained transformer model to use for embeddings.")
     parser.add_argument("--embed_dim", type=int, default=768,
                         help="Dimension to which the model embedding should be truncated or padded.")
@@ -36,7 +44,8 @@ def parse_arguments():
 def load_data(csv_path, icd_path):
     print(f"[INFO] Loading patient events from: {csv_path}")
     # Set low_memory to False to suppress dtype warnings for mixed types.
-    df = pd.read_csv(csv_path, low_memory=False)
+    # df = pd.read_csv(csv_path, low_memory=False)
+    df = pd.read_csv(csv_path, sep='$', low_memory=False).drop_duplicates()
     df = df.drop_duplicates()
     icd_df = pd.read_csv(icd_path)
 
@@ -224,7 +233,8 @@ def generate_and_save_embeddings(summary_df, tokenizer, model, device, embed_dim
             })
 
     meta_df = pd.DataFrame(meta)
-    meta_csv_path = os.path.join(output_dir, 'patient_embedding_metadata.csv')
+    meta_csv_path = os.path.join(output_dir, output_fname)
+    print(meta_df.shape)
     meta_df.to_csv(meta_csv_path, index=False)
     print(f"[DONE] Metadata saved to: {meta_csv_path}")
 
@@ -246,6 +256,10 @@ def main():
     tokenizer, model = load_embedding_model(args.model_name, device)
     generate_and_save_embeddings(summary_df, tokenizer, model, device,
                                  args.embed_dim, args.batch_size, args.output_dir)
+
+# batch size, 64 vs 512
+
+    print("End of Embedding Generation")
 
 if __name__ == '__main__':
     main()

@@ -2,17 +2,29 @@ import pandas as pd
 from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
 from tqdm import tqdm
 import re
+import os 
 
 # change variables
-event_path =  "./../../../commonfilesharePHI/slee/ckd-optum/" 
-event_file = "patients_subset_all.csv" # 10, 100, all
+# event_path =  "./../../../commonfilesharePHI/slee/ckd-optum/" 
+# event_file = event_path + "patients_subset_full.csv" # 10, 100, all
+
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
 output_dir_m = output_path + "ckd_tab_m_full" # 10, 100, full
+output_fname = "ckd_processed_tab.csv"
+
+event_file =  "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt" # path to all data
+
+try:
+    os.mkdir(output_dir_m)
+except FileExistsError:
+    pass
 
 # -----------------------------
 # Load and preprocess
 # -----------------------------
-df = pd.read_csv(event_path, low_memory=False).drop_duplicates()
+# df = pd.read_csv(event_file, low_memory=False).drop_duplicates()
+df = pd.read_csv(event_file, sep='$', low_memory=False).drop_duplicates()
+print(df.shape)
 df['EventTimeStamp'] = pd.to_datetime(df['EventTimeStamp'], errors='coerce')
 df['EventDate'] = df['EventTimeStamp'].dt.date
 df['DataCategory'] = df['DataCategory'].fillna('None')
@@ -23,7 +35,8 @@ df['DataNumeric'] = pd.to_numeric(df['DataNumeric'], errors='coerce')
 # -----------------------------
 df['is_gfr'] = df['DataCategory'].str.upper().str.contains("GFR|GFREST", na=False)
 all_days = df[['PatientID', 'EventDate']].drop_duplicates().sort_values(['PatientID', 'EventDate'])
-
+# change
+all_days = all_days.dropna()
 # -----------------------------
 # Extract and forward-fill GFR
 # -----------------------------
@@ -154,12 +167,15 @@ else:
     demo_df = pd.DataFrame(columns=["PatientID"])
 
 base_df = pd.merge(base_df, demo_df, on="PatientID", how="left")
-
+print("testing")
 # -----------------------------
 # Final report
 # -----------------------------
 print("[INFO] Final tabular shape:", base_df.shape)
 print("[INFO] Sample features:\n", base_df.head())
 print("[INFO] CKD stage counts:\n", base_df["CKD_stage"].value_counts(dropna=False))
-base_df_path = os.path.join(output_dir_m, "ckd_processed_tab_full.csv")
+base_df_path = os.path.join(output_dir_m, output_fname)
+print(base_df.shape)
 base_df.to_csv(base_df_path, index=False)
+
+print("End of Tabular Generation")

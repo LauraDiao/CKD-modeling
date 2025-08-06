@@ -22,11 +22,15 @@ from datetime import timedelta # Import timedelta
 
 # change variables
 prediction_period = 365 # 365, 730, 1095
+# embedding_path = "./../../../commonfilesharePHI/ldiao/ckd_project/ckd_embeddings_m_full" # 10, 100, full
 embedding_size = "full" # 10, 100, full
 embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
 years = str(round(prediction_period/365))
-window_size = 50
-mod_output_dir = "_filter_stage_3" # ""
+window_size = 365
+filtering_stage = False
+mod_output_dir = ""
+if filtering_stage: 
+    mod_output_dir = "_filter_stage_3" # ""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1165,10 +1169,10 @@ def main():
     metadata['CKD_stage_clean'] = metadata['CKD_stage_clean'].astype(int)
     
     # change 
-    # filter patients
-    metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
-    metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
-    logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
+    if filtering_stage: 
+        metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
+        metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
+        logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
     
     # --- Start of Label Generation ---
     # Label 1: CKD stage 4 and above at the current visit

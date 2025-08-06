@@ -25,10 +25,11 @@ import warnings
 
 # change variables
 prediction_period = 365 # 365, 730, 1095
+# embedding_path = "./../../../commonfilesharePHI/ldiao/ckd_project/ckd_embeddings_m_full" # 10, 100, full
 embedding_size = "full" # 10, 100, full
 embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
 years = str(round(prediction_period/365))
-window_size = 50
+window_size = 365
 filtering_stage = False
 mod_output_dir = ""
 if filtering_stage: 

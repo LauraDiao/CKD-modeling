@@ -22,11 +22,16 @@ from datetime import timedelta # Added for future label generation
 
 # changes
 prediction_period = 365 # 365, 730, 1095
-tab_size = "/ckd_processed_tab_full.csv"
-tab_path =  "./../../../commonfilesharePHI/slee/ckd-optum" + tab_size
+tab_path = "./../../../commonfilesharePHI/ldiao/ckd_project/ckd_tab_m_full" # 10, 100, full
+tab_path += "/ckd_processed_tab.csv"
+# tab_size = "/ckd_processed_tab_full.csv"
+# tab_path =  "./../../../commonfilesharePHI/slee/ckd-optum" + tab_size
 years = str(round(prediction_period/365))
 # target_label_col=f'label_ckd_{years}_year_future' # remove
-mod_output_dir = "_filter_stage_3" # ""
+filtering_stage = False
+mod_output_dir = ""
+if filtering_stage: 
+    mod_output_dir = "_filter_stage_3" # ""
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1197,24 +1202,24 @@ def main():
 
     # CKD Stage Cleaning (as in original tabular script, adapted)
     if 'CKD_stage' in metadata.columns:
-        metadata['CKD_stage_cleaned'] = metadata['CKD_stage'].apply(clean_ckd_stage)
+        metadata['CKD_stage_clean'] = metadata['CKD_stage'].apply(clean_ckd_stage)
         # Fill missing stages within a patient's record
-        metadata['CKD_stage_cleaned'] = metadata.groupby('PatientID')['CKD_stage_cleaned'].bfill().ffill()
-        metadata = metadata.dropna(subset=['CKD_stage_cleaned']) # Remove patients with no stage info
-        metadata['CKD_stage_cleaned'] = metadata['CKD_stage_cleaned'].astype(int)
+        metadata['CKD_stage_clean'] = metadata.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
+        metadata = metadata.dropna(subset=['CKD_stage_clean']) # Remove patients with no stage info
+        metadata['CKD_stage_clean'] = metadata['CKD_stage_clean'].astype(int)
     else:
         logger.error("'CKD_stage' column not found in tabular data. Cannot proceed with label generation.")
-        return
-true
+        return true
+
     # change 
-    # filter patients
-    metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
-    metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
-    logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
-    
+    if filtering_stage: 
+        metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
+        metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
+        logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
+        
 
     # Label 1: Current CKD stage >= 4
-    metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_cleaned'].apply(lambda x: 1 if x >= 4 else 0)
+    metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_clean'].apply(lambda x: 1 if x >= 4 else 0)
     logger.info(f"Value counts for 'label_ckd_stage_4_plus':\n{metadata['label_ckd_stage_4_plus'].value_counts(dropna=False).to_string()}")
 
 
@@ -1236,7 +1241,7 @@ true
 
     # Feature Selection: Use all columns except identifiers, raw date/stage, and created labels/TTE info
     exclude_cols = ['PatientID', 'EventDate', 'CKD_stage', # Raw stage column
-                    'CKD_stage_cleaned', # Intermediate cleaned stage
+                    'CKD_stage_clean', # Intermediate cleaned stage
                     'label_ckd_stage_4_plus', f'label_ckd_{years}_year_future', # Generated labels
                     'time_until_progression', 'event_for_cox_indicator'] # Generated TTE info
     
