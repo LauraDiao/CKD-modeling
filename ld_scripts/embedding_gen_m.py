@@ -13,7 +13,8 @@ event_path =  "./../../../commonfilesharePHI/slee/ckd-optum/"
 # event_file = event_path + "patients_subset_100.csv" # 10, 100, all
 
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-output_dir_m = output_path + "ckd_embeddings_m_100" # 10, 100, full
+# previous script runnning in 100 - check later
+output_dir_m = output_path + "ckd_embeddings_m_full2" # 10, 100, full
 output_fname = 'patient_embedding_metadata.csv'
 
 event_file =  "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt" # path to all data
@@ -37,7 +38,7 @@ def parse_arguments():
                         help="Pretrained transformer model to use for embeddings.")
     parser.add_argument("--embed_dim", type=int, default=768,
                         help="Dimension to which the model embedding should be truncated or padded.")
-    parser.add_argument("--batch_size", type=int, default=128,
+    parser.add_argument("--batch_size", type=int, default=1024,
                         help="Batch size for encoding the synthetic notes.")
     return parser.parse_args()
 
@@ -251,13 +252,12 @@ def main():
     # Forward-fill GFR values and compute CKD stage per patient
     summary_df = forward_fill_ckd_stage(summary_df)
     print(summary_df.head())
-
-    device = torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+    # cuda 1, 0
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     tokenizer, model = load_embedding_model(args.model_name, device)
     generate_and_save_embeddings(summary_df, tokenizer, model, device,
                                  args.embed_dim, args.batch_size, args.output_dir)
 
-# batch size, 64 vs 512
 
     print("End of Embedding Generation")
 
