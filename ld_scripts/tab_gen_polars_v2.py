@@ -1,37 +1,33 @@
 import polars as pl
 from tqdm import tqdm
-import re
 import os
+import re
 import logging
 
-# Define a function to apply to a column
-def truncate_icd(code):
-    code = str(code).strip().replace(" ", "")
-    if '.' in code:
-        prefix, suffix = code.split('.', 1)
-        return f"{prefix}.{suffix[0]}" if suffix else prefix
-    return code
-
-# Setup logging
+# -----------------------------
+# Config
+# -----------------------------
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-output_dir_m = output_path + "ckd_tab_m_10" # 10, 100, full; change
+output_dir_m = output_path + "ckd_tab_m_v1_10"  # 10, 100, full
+event_file =  "./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_10.csv" # 10, 100, all - path to the main event CSV file
+# event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"  # path to all data
 output_fname = "ckd_processed_tab.csv"
-log_fname = "tab_gen_log.log"
-event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
 
 try:
     os.makedirs(output_dir_m, exist_ok=True)
 except Exception as e:
-    print(f"Error creating output directory: {e}")
-    exit()
+    raise RuntimeError(f"Could not create output directory: {e}")
 
-log_file_path = os.path.join(output_dir_m, log_fname)
+# -----------------------------
+# Logging setup
+# -----------------------------
+log_path = os.path.join(output_dir_m, "tab_gen_m_polars.log")
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format="%(asctime)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(log_file_path),
-        logging.StreamHandler()
+        logging.FileHandler(log_path),
+        logging.StreamHandler()  # remove if only file logging desired
     ]
 )
 logger = logging.getLogger(__name__)
@@ -39,197 +35,157 @@ logger = logging.getLogger(__name__)
 # -----------------------------
 # Load and preprocess
 # -----------------------------
-df = pl.read_csv(event_file, separator='$', infer_schema_length=10000).unique()
-logger.info(f"Initial DataFrame shape: {df.shape}")
-
 df = (
-    df.with_columns(
-        pl.col('EventTimeStamp').str.strptime(pl.Datetime, '%Y-%m-%d %H:%M:%S.%f', strict=False),
+    pl.scan_csv(
+        event_file,
+        separator="$",
+        null_values="null",
+        schema_overrides={"DataNumeric": pl.Float64}
     )
-    .with_columns(
-        pl.col('EventTimeStamp').dt.date().alias('EventDate'),
-        pl.col('DataCategory').fill_null('None'),
-        pl.col('DataNumeric').cast(pl.Float64, strict=False),
-    )
+    .unique()
+    .with_columns([
+        pl.col("EventTimeStamp").str.strptime(pl.Datetime, "%Y-%m-%d %H:%M:%S", strict=False).alias("EventTimeStamp"),
+    ])
+    .with_columns([
+        pl.col("EventTimeStamp").dt.date().alias("EventDate"),
+        pl.col("DataCategory").fill_null("None"),
+        pl.col("DataNumeric").cast(pl.Float64)
+    ])
 )
 
 # -----------------------------
 # Base: full patient-day index
 # -----------------------------
-df = df.with_columns(
-    pl.col('DataCategory').str.to_uppercase().str.contains("GFR|GFREST").alias("is_gfr")
-)
+df = df.with_columns([
+    pl.col("DataCategory").str.to_uppercase().str.contains("GFR|GFREST").alias("is_gfr")
+])
 
 all_days = (
-    df.select(['PatientID', 'EventDate'])
+    df.select(["PatientID", "EventDate"])
     .unique()
-    .sort(['PatientID', 'EventDate'])
     .drop_nulls()
+    .sort(["PatientID", "EventDate"])
 )
 
 # -----------------------------
 # Extract and forward-fill GFR
 # -----------------------------
-gfr_df = df.filter(pl.col('is_gfr') & pl.col('DataNumeric').is_not_null())
-
 gfr_daywise = (
-    gfr_df.group_by(['PatientID', 'EventDate'])
-    .agg(pl.col('DataNumeric').first().alias('GFR_combined'))
+    df.filter(pl.col("is_gfr") & pl.col("DataNumeric").is_not_null())
+      .group_by(["PatientID", "EventDate"])
+      .agg(pl.col("DataNumeric").first().alias("GFR_combined"))
 )
 
-base_df = all_days.join(gfr_daywise, on=['PatientID', 'EventDate'], how='left')
-
-base_df = base_df.sort(['PatientID', 'EventDate'])
-base_df = base_df.with_columns(
-    pl.col('GFR_combined').forward_fill().over('PatientID')
+base_df = (
+    all_days.join(gfr_daywise, on=["PatientID", "EventDate"], how="left")
+    .sort(["PatientID", "EventDate"])
+    .with_columns([
+        pl.col("GFR_combined").forward_fill().over("PatientID")
+    ])
 )
 
+# -----------------------------
+# CKD stage mapping
+# -----------------------------
 def gfr_to_stage(gfr):
     if gfr is None:
-        return (None, 0)
-    if gfr >= 90:
-        return ("1", 1)
-    if gfr >= 60:
-        return ("2", 2)
-    if gfr >= 45:
-        return ("3a", 3.1)
-    if gfr >= 30:
-        return ("3b", 3.2)
-    if gfr >= 15:
-        return ("4", 4)
-    return ("5", 5)
+        return None
+    if gfr >= 90: return "1"
+    if gfr >= 60: return "2"
+    if gfr >= 45: return "3a"
+    if gfr >= 30: return "3b"
+    if gfr >= 15: return "4"
+    return "5"
 
-# Enforce monotonic CKD staging
-base_df = base_df.with_columns(
-    pl.struct(['GFR_combined'])
-    .map_elements(lambda s: gfr_to_stage(s['GFR_combined']), return_dtype=pl.Struct([pl.Field("CKD_stage", pl.Utf8), pl.Field("CKD_rank", pl.Float64)]))
-    .alias('stage_tuple')
-)
-base_df = base_df.with_columns(
-    pl.col('stage_tuple').struct.field('CKD_stage').alias('CKD_stage'),
-    pl.col('stage_tuple').struct.field('CKD_rank').alias('CKD_rank')
-)
+pdf = base_df.collect().to_pandas()
+new_stages = {}
+for pid, group in pdf.groupby("PatientID"):
+    group = group.sort_values("EventDate")
+    max_rank = 0
+    prev_idx = None
+    for idx, row in group.iterrows():
+        stage = gfr_to_stage(row["GFR_combined"])
+        rank_map = {"1":1,"2":2,"3a":3.1,"3b":3.2,"4":4,"5":5,None:0}
+        rank = rank_map.get(stage, 0)
+        if rank < max_rank:
+            stage = new_stages.get(prev_idx, stage)
+        else:
+            max_rank = rank
+        new_stages[idx] = stage
+        prev_idx = idx
 
-base_df = base_df.with_columns(
-    pl.col('CKD_rank').cum_max().over('PatientID').alias('max_rank')
-)
-
-base_df = base_df.with_columns(
-    pl.when(pl.col('CKD_rank') < pl.col('max_rank'))
-    .then(pl.col('CKD_stage').backward_fill().over('PatientID'))
-    .otherwise(pl.col('CKD_stage'))
-    .alias('CKD_stage')
-)
-
-base_df = base_df.drop(['stage_tuple', 'CKD_rank', 'max_rank'])
-
+pdf["CKD_stage"] = pdf.index.map(new_stages)
+base_df = pl.from_pandas(pdf)
 
 # -----------------------------
-# One-hot encode diagnoses (truncated ICD codes)
+# Diagnosis one-hot encoding
 # -----------------------------
-diag_df = df.filter(pl.col("DataType") == "Diagnosis")
+def truncate_icd(code):
+    code = str(code).strip().replace(" ", "")
+    if '.' in code:
+        prefix, suffix = code.split('.', 1)
+        return f"{prefix}.{suffix[0]}" if suffix else prefix
+    return code
 
-diag_df = diag_df.with_columns(
-    pl.col("DataCategory").map_elements(truncate_icd).alias("ICD_clean")
+diag_df = (
+    df.filter(pl.col("DataType") == "Diagnosis")
+      .with_columns(pl.col("DataCategory").map_elements(truncate_icd).alias("ICD_clean"))
+      .group_by(["PatientID", "EventDate"])
+      .agg(pl.col("ICD_clean").list())
+      .collect()
 )
 
-diagnosis_map = (
-    diag_df.group_by(["PatientID", "EventDate"])
-    .agg(pl.col("ICD_clean").list())
-)
-
-all_icd_codes = diagnosis_map.select(pl.col("ICD_clean").list.unique().flatten()).to_series().to_list()
-all_icd_codes = [f"diag_{code}" for code in all_icd_codes]
-
-diag_df_onehot = (
-    diagnosis_map.with_columns(
-        pl.lit(1).alias("val"),
-        pl.col("ICD_clean").map_elements(lambda x: [f"diag_{c}" for c in x], return_dtype=pl.List(pl.Utf8)).alias("diag_names")
+all_icds = sorted({icd for sublist in diag_df["ICD_clean"] for icd in sublist})
+for icd in all_icds:
+    diag_df = diag_df.with_columns(
+        pl.col("ICD_clean").list.contains(icd).cast(pl.Int8).alias(f"diag_{icd}")
     )
-    .pivot(values="val", columns="diag_names", index=["PatientID", "EventDate"], aggregate_function="first")
-    .fill_null(0)
-)
-base_df = base_df.join(diag_df_onehot, on=["PatientID", "EventDate"], how="left").fill_null(0)
+diag_df = diag_df.drop("ICD_clean")
+
+base_df = base_df.join(diag_df, on=["PatientID", "EventDate"], how="left")
 
 # -----------------------------
-# One-hot encode medications
+# Medications one-hot
 # -----------------------------
-med_df = df.filter(pl.col("DataType") == "Medications")
-med_df = med_df.with_columns(
-    pl.col("DataCategory").str.to_uppercase().str.replace(" ", "_").alias("med_clean")
+med_df = (
+    df.filter(pl.col("DataType") == "Medications")
+      .with_columns(
+          pl.col("DataCategory").cast(pl.Utf8).str.to_uppercase().str.replace(" ", "_").alias("med_clean")
+      )
+      .group_by(["PatientID", "EventDate"])
+      .agg(pl.col("med_clean").list())
+      .collect()
 )
 
-medication_map = (
-    med_df.group_by(["PatientID", "EventDate"])
-    .agg(pl.col("med_clean").list())
-)
-
-all_meds = medication_map.select(pl.col("med_clean").list.unique().flatten()).to_series().to_list()
-all_meds = [f"med_{c}" for c in all_meds]
-
-med_df_onehot = (
-    medication_map.with_columns(
-        pl.lit(1).alias("val"),
-        pl.col("med_clean").map_elements(lambda x: [f"med_{c}" for c in x], return_dtype=pl.List(pl.Utf8)).alias("med_names")
+all_meds = sorted({m for sublist in med_df["med_clean"] for m in sublist})
+for m in all_meds:
+    med_df = med_df.with_columns(
+        pl.col("med_clean").list.contains(m).cast(pl.Int8).alias(f"med_{m}")
     )
-    .pivot(values="val", columns="med_names", index=["PatientID", "EventDate"], aggregate_function="first")
-    .fill_null(0)
+med_df = med_df.drop("med_clean")
+
+base_df = base_df.join(med_df, on=["PatientID", "EventDate"], how="left")
+
+# -----------------------------
+# Labs pivot
+# -----------------------------
+lab_df = (
+    df.filter((pl.col("DataType") == "Labs") & pl.col("DataNumeric").is_not_null())
+      .with_columns(pl.col("DataCategory").cast(pl.Utf8).str.to_uppercase())
+      .group_by(["PatientID", "EventDate", "DataCategory"])
+      .agg(pl.col("DataNumeric").first())
+      .pivot(values="DataNumeric", index=["PatientID", "EventDate"], columns="DataCategory")
+      .collect()
 )
-base_df = base_df.join(med_df_onehot, on=["PatientID", "EventDate"], how="left").fill_null(0)
+lab_df = lab_df.rename({col: f"lab_{col}" for col in lab_df.columns if col not in ["PatientID", "EventDate"]})
+base_df = base_df.join(lab_df, on=["PatientID", "EventDate"], how="left")
 
 # -----------------------------
-# Pivot-style lab expansion
+# Final report and save
 # -----------------------------
-lab_df = df.filter((pl.col("DataType") == "Labs") & pl.col("DataNumeric").is_not_null())
-lab_df = lab_df.with_columns(pl.col("DataCategory").str.to_uppercase())
+logger.info(f"[INFO] Final tabular shape: {base_df.shape}")
+logger.info(f"[INFO] Sample features:\n{base_df.head().to_pandas()}")
+logger.info(f"[INFO] CKD stage counts:\n{base_df.select('CKD_stage').to_pandas().value_counts(dropna=False)}")
 
-lab_pivot = (
-    lab_df.group_by(["PatientID", "EventDate", "DataCategory"])
-    .agg(pl.col("DataNumeric").first())
-    .pivot(values="DataNumeric", columns="DataCategory", index=["PatientID", "EventDate"], aggregate_function="first")
-    .pipe(lambda df_p: df_p.rename({col: f"lab_{col}" for col in df_p.columns if col not in ["PatientID", "EventDate"]}))
-)
-
-base_df = base_df.join(lab_pivot, on=["PatientID", "EventDate"], how="left")
-
-# -----------------------------
-# Optional: One-hot encode demographics
-# -----------------------------
-def format_demographics(s):
-    s = str(s).replace("//", " ").replace("/", " ")
-    s = re.sub(r"Unknown Not Reported", "", s).strip()
-    s = re.sub(r"Do not identify with Race", "unknown race", s).strip()
-    return s
-
-demo_df = df.filter(pl.col("DataType") == "Demographics").drop_nulls(subset=["DataCategory"])
-
-if not demo_df.is_empty():
-    demo_df = (
-        demo_df.group_by("PatientID")
-        .first()
-        .with_columns(pl.col("DataCategory").map_elements(format_demographics).alias("demo_string"))
-    )
-    
-    unique_demos = demo_df.select(pl.col("demo_string").unique()).to_series().to_list()
-    
-    demo_df = demo_df.with_columns(
-        pl.lit(1).alias("val"),
-        pl.col("demo_string").map_elements(lambda x: f"demo_{x}", return_dtype=pl.Utf8).alias("demo_names")
-    )
-    
-    demo_onehot = demo_df.pivot(values="val", columns="demo_names", index=["PatientID"], aggregate_function="first").fill_null(0)
-    
-    base_df = base_df.join(demo_onehot, on="PatientID", how="left").fill_null(0)
-
-logger.info("Testing stage completed")
-# -----------------------------
-# Final report
-# -----------------------------
-logger.info(f"Final tabular shape: {base_df.shape}")
-logger.info(f"Sample features:\n{base_df.head()}")
-logger.info(f"CKD stage counts:\n{base_df['CKD_stage'].value_counts(sort=True, drop_nulls=False)}")
-base_df_path = os.path.join(output_dir_m, output_fname)
-logger.info(f"Final DataFrame shape: {base_df.shape}")
-base_df.write_csv(base_df_path, separator=',', has_header=True)
-
+base_df.write_csv(os.path.join(output_dir_m, output_fname))
 logger.info("End of Tabular Generation")

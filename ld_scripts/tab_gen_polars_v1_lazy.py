@@ -7,10 +7,12 @@ from tqdm import tqdm
 
 # change variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-output_dir_m = output_path + "ckd_tab_m_v1_full"  # 10, 100, full
-event_file =  "./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_10.csv" # 10, 100, all - path to the main event CSV file
-use_custom_separator = True
+subset_size = "10"  # 10, 100, full
+output_dir_m = output_path + "ckd_tab_m_v1_100"  # 10, 100, full
+event_file =  "./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_100.csv" # 10, 100, all - path to the main event CSV file
+use_custom_separator = False
 if use_custom_separator:
+    output_dir_m = output_path + "ckd_tab_m_v1_full"  # 10, 100, full
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"  # path to all data
 output_fname = "ckd_processed_tab.csv"
 
@@ -30,22 +32,19 @@ logger = logging.getLogger(__name__)
 
 logger.info(f"Processing started. Output directory: {output_dir_m}")
 
-
 # -----------------------------
 # Load and preprocess with Polars
 # -----------------------------
-# Using pl.read_csv to load the entire file into a DataFrame
-# Add a toggle to switch between separators
 
 if use_custom_separator:
-    df = pl.read_csv(
+    df = pl.scan_csv(
         event_file,
         separator='$',
         infer_schema_length=None,
         null_values="null",
     ).unique()
 else:
-    df = pl.read_csv(
+    df = pl.scan_csv(
         event_file,
         infer_schema_length=None,
         null_values="null",
@@ -69,7 +68,6 @@ df = df.with_columns(
     pl.col("EventTimeStamp").dt.date().alias("EventDate")
 )
 
-
 # -----------------------------
 # Base: full patient-day index
 # -----------------------------
@@ -87,7 +85,6 @@ gfr_df = df.filter(
 gfr_daywise = gfr_df.group_by("PatientID", "EventDate").first().rename({"DataNumeric": "GFR_combined"})
 
 base_df = all_days.join(gfr_daywise, on=["PatientID", "EventDate"], how="left").sort(["PatientID", "EventDate"])
-
 
 # Forward-fill GFR
 base_df = base_df.with_columns(
@@ -144,7 +141,6 @@ base_df = base_df.with_columns(
     .otherwise(pl.lit(None)).alias("CKD_stage")
 ).drop("CKD_rank", "CKD_rank_monotonic")
 
-
 # -----------------------------
 # One-hot encode diagnoses (truncated ICD codes)
 # -----------------------------
@@ -159,13 +155,13 @@ diag_df = df.filter(pl.col("DataType") == "Diagnosis").with_columns(
     pl.col("DataCategory").map_elements(truncate_icd, return_dtype=pl.Utf8).alias("ICD_clean")
 ).group_by("PatientID", "EventDate").agg(pl.col("ICD_clean").unique().sort().alias("ICD_list"))
 
+diag_df_collect = diag_df.collect()
 mlb_diag = MultiLabelBinarizer()
-diag_features = mlb_diag.fit_transform(diag_df["ICD_list"])
+diag_features = mlb_diag.fit_transform(diag_df_collect["ICD_list"])
 diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_])
-diag_df_onehot = pl.concat([diag_df.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
+diag_df_onehot = pl.concat([diag_df_collect.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
 
-base_df = base_df.join(diag_df_onehot, on=["PatientID", "EventDate"], how="left")
-
+base_df = base_df.join(diag_df_onehot.lazy(), on=["PatientID", "EventDate"], how="left")
 
 # -----------------------------
 # One-hot encode medications
@@ -174,12 +170,13 @@ med_df = df.filter(pl.col("DataType") == "Medications").with_columns(
     pl.col("DataCategory").str.to_uppercase().str.replace(" ", "_").alias("med_clean")
 ).group_by("PatientID", "EventDate").agg(pl.col("med_clean").unique().sort().alias("med_list"))
 
+med_df_collect = med_df.collect()
 mlb_med = MultiLabelBinarizer()
-med_features = mlb_med.fit_transform(med_df["med_list"])
+med_features = mlb_med.fit_transform(med_df_collect["med_list"])
 med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_])
-med_df_onehot = pl.concat([med_df.select("PatientID", "EventDate"), med_onehot], how="horizontal")
+med_df_onehot = pl.concat([med_df_collect.select("PatientID", "EventDate"), med_onehot], how="horizontal")
 
-base_df = base_df.join(med_df_onehot, on=["PatientID", "EventDate"], how="left")
+base_df = base_df.join(med_df_onehot.lazy(), on=["PatientID", "EventDate"], how="left")
 
 # -----------------------------
 # Pivot-style lab expansion
@@ -190,7 +187,10 @@ lab_df = df.filter(
     pl.col("DataCategory").cast(pl.Utf8, strict=False).str.to_uppercase().alias("LabCategory")
 ).group_by("PatientID", "EventDate", "LabCategory").agg(pl.col("DataNumeric").first())
 
-lab_pivot = lab_df.pivot(
+# Collect here before pivoting
+lab_df_eager = lab_df.collect()
+
+lab_pivot = lab_df_eager.pivot(
     index=["PatientID", "EventDate"],
     columns="LabCategory",
     values="DataNumeric",
@@ -199,10 +199,9 @@ lab_pivot = lab_df.pivot(
 
 # Dynamically generate a dictionary for renaming the pivoted columns
 rename_dict = {c: f"lab_{c}" for c in lab_pivot.columns[2:]}
-lab_pivot = lab_pivot.rename(rename_dict)
+lab_pivot_renamed = lab_pivot.rename(rename_dict).lazy()
 
-base_df = base_df.join(lab_pivot, on=["PatientID", "EventDate"], how="left")
-
+base_df = base_df.join(lab_pivot_renamed, on=["PatientID", "EventDate"], how="left")
 
 # -----------------------------
 # Optional: One-hot encode demographics
@@ -219,51 +218,45 @@ def format_demographics(demo_string):
 demo_df = df.filter((pl.col("DataType") == "Demographics") & pl.col("DataCategory").is_not_null())\
             .group_by("PatientID").first().select(["PatientID", "DataCategory"])
 
+demo_df_collect = demo_df.collect()
 
-if not demo_df.is_empty():
-    demo_df = demo_df.with_columns(
+# Handle the case where the demographics data is not empty
+if not demo_df_collect.is_empty():
+    demo_df_collect = demo_df_collect.with_columns(
         pl.col("DataCategory").map_elements(format_demographics).alias("demo_string")
     )
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
-    demo_encoded = enc.fit_transform(demo_df.select("demo_string").to_numpy())
+    demo_encoded = enc.fit_transform(demo_df_collect.select("demo_string").to_numpy())
     demo_onehot = pl.DataFrame(demo_encoded, schema=[f"demo_{c}" for c in enc.categories_[0]])
-    demo_df = pl.concat([demo_df.select("PatientID"), demo_onehot], how="horizontal")
+    demo_df = pl.concat([demo_df_collect.select("PatientID"), demo_onehot], how="horizontal")
 else:
-    # Handle case with no demographics data by creating a dummy dataframe with the correct schema
-    all_demo_categories = df.filter(pl.col("DataType") == "Demographics" & pl.col("DataCategory").is_not_null())\
-                            .select(pl.col("DataCategory").map_elements(format_demographics).unique()).to_series().to_list()
+    # Handle the case where no demographics data exists
+    all_demo_categories = df.filter((pl.col("DataType") == "Demographics") & pl.col("DataCategory").is_not_null())\
+                            .select(pl.col("DataCategory").map_elements(format_demographics).unique()).collect().to_series().to_list()
+    
     if not all_demo_categories:
-        all_demo_categories = [""] # Ensure there is at least one category to fit the encoder
+        all_demo_categories = ["unknown race"]
+        
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     enc.fit(pl.Series(all_demo_categories).to_numpy().reshape(-1, 1))
-    empty_demo_onehot = pl.DataFrame(enc.transform([[""]]), schema=[f"demo_{c}" for c in enc.categories_[0]])
-    demo_df = pl.DataFrame({"PatientID": [], "demo_string": []}).with_columns(
-        pl.col("PatientID").cast(pl.Utf8)
-    )
-    demo_df = demo_df.hstack(empty_demo_onehot)
+    
+    # Create an empty one-hot encoded DataFrame with the expected schema
+    empty_demo_onehot = pl.DataFrame(columns=[f"demo_{c}" for c in enc.categories_[0]])
+    demo_df = pl.DataFrame({"PatientID": []}).with_columns(pl.col("PatientID").cast(pl.Utf8)).hstack(empty_demo_onehot)
 
-base_df = base_df.join(demo_df, on="PatientID", how="left")
+base_df = base_df.join(demo_df.lazy(), on="PatientID", how="left")
 
 # -----------------------------
 # Final report
 # -----------------------------
-logger.info(f"[INFO] Final tabular shape: {base_df.shape}")
-logger.info(f"[INFO] Sample features:\n{base_df.head()}")
-logger.info(f"[INFO] CKD stage counts:\n{base_df['CKD_stage'].value_counts(sort=True)}")
+base_df_final = base_df.collect()
+
+logger.info(f"[INFO] Final tabular shape: {base_df_final.shape}")
+logger.info(f"[INFO] Sample features:\n{base_df_final.head()}")
+logger.info(f"[INFO] CKD stage counts:\n{base_df_final['CKD_stage'].value_counts(sort=True)}")
 base_df_path = os.path.join(output_dir_m, output_fname)
-logger.info(f"Writing final DataFrame of shape {base_df.shape} to {base_df_path}")
-base_df.write_csv(base_df_path)
+logger.info(f"Writing final DataFrame of shape {base_df_final.shape} to {base_df_path}")
+base_df_final.write_csv(base_df_path)
 
 logger.info("End of Tabular Generation")
 
-# check csv
-# Construct the full file path
-final_file_path = os.path.join(output_dir_m, output_fname)
-
-# Read the processed CSV file
-try:
-    final_df = pl.read_csv(final_file_path)
-    print("File read successfully.")
-    print(final_df.head())
-except Exception as e:
-    print(f"An error occurred while reading the file: {e}")
