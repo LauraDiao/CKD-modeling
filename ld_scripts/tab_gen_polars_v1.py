@@ -7,9 +7,9 @@ from tqdm import tqdm
 
 # change variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-output_dir_m = output_path + "ckd_tab_m_v1_full"  # 10, 100, full
-event_file =  "./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_10.csv" # 10, 100, all - path to the main event CSV file
-use_custom_separator = True
+output_dir_m = output_path + "ckd_tab_m_v1_100"  # 10, 100, full
+event_file =  "./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_100.csv" # 10, 100, all - path to the main event CSV file
+use_custom_separator = False
 if use_custom_separator:
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"  # path to all data
 output_fname = "ckd_processed_tab.csv"
