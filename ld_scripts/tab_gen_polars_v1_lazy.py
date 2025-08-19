@@ -1,3 +1,5 @@
+# polars script with datatype toggles
+# scan_csv
 import polars as pl
 from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
 import os
@@ -8,7 +10,7 @@ from memory_profiler import memory_usage
 
 # --- New variables for data type toggles ---
 use_float64 = False # Set to True to use Float64, False for Float32
-use_int64 = False # Set to True to use Int64, False for Int32
+use_int64 = False # Set to True to use Int64, False for Int16
 
 # change variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
@@ -22,8 +24,9 @@ if use_custom_separator:
 output_fname = "ckd_processed_tab.csv"
 
 # --- Add type suffixes to output directory ---
+output_dir_m  += "_scan_csv"
 output_dir_m += f"_{'f64' if use_float64 else 'f32'}"
-output_dir_m += f"_{'i64' if use_int64 else 'i32'}"
+output_dir_m += f"_{'i64' if use_int64 else 'i16'}"
 
 try:
     os.makedirs(output_dir_m, exist_ok=True)
@@ -33,10 +36,11 @@ except FileExistsError:
 
 print(f"Processing started. Output directory: {output_dir_m}")
 print(f"Using DataNumeric data type: {'Float64' if use_float64 else 'Float32'}")
-print(f"Using PatientID data type: {'Int64' if use_int64 else 'Int32'}")
+print(f"Using PatientID data type: {'Int64' if use_int64 else 'Int16'}")
 
 # --- Determine data types based on toggles ---
 data_numeric_dtype = pl.Float64 if use_float64 else pl.Float32
+data_integer_dtype = pl.Int64 if use_int64 else pl.Int16
 
 # -----------------------------
 # Load and preprocess with Polars
@@ -59,7 +63,7 @@ else:
 print(f"Initial DataFrame schema: {df.schema}")
 
 df = df.with_columns(
-    pl.col("PatientID").cast(pl.Utf8,  strict=False),
+    pl.col("PatientID").cast(pl.Utf8, strict=False),
     pl.col("EventTimeStamp").cast(pl.Utf8, strict=False),
     pl.col("DataCategory").cast(pl.Utf8, strict=False),
     pl.col("DataNumeric").cast(data_numeric_dtype, strict=False),
@@ -168,7 +172,7 @@ diag_df = df.filter(pl.col("DataType") == "Diagnosis").with_columns(
 diag_df_collect = diag_df.collect()
 mlb_diag = MultiLabelBinarizer()
 diag_features = mlb_diag.fit_transform(diag_df_collect["ICD_list"])
-diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_])
+diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_]).cast(data_integer_dtype)
 diag_df_onehot = pl.concat([diag_df_collect.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
 base_df = base_df.join(diag_df_onehot.lazy(), on=["PatientID", "EventDate"], how="left")
 print("Diagnosis one-hot encoding complete.")
@@ -180,7 +184,7 @@ med_df = df.filter(pl.col("DataType") == "Medications").with_columns(
 med_df_collect = med_df.collect()
 mlb_med = MultiLabelBinarizer()
 med_features = mlb_med.fit_transform(med_df_collect["med_list"])
-med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_])
+med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_]).cast(data_integer_dtype)
 med_df_onehot = pl.concat([med_df_collect.select("PatientID", "EventDate"), med_onehot], how="horizontal")
 base_df = base_df.join(med_df_onehot.lazy(), on=["PatientID", "EventDate"], how="left")
 print("Medication one-hot encoding complete.")
@@ -227,7 +231,7 @@ if not demo_df_collect.is_empty():
     )
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     demo_encoded = enc.fit_transform(demo_df_collect.select("demo_string").to_numpy())
-    demo_onehot = pl.DataFrame(demo_encoded, schema=[f"demo_{c}" for c in enc.categories_[0]])
+    demo_onehot = pl.DataFrame(demo_encoded, schema=[f"demo_{c}" for c in enc.categories_[0]]).cast(data_integer_dtype)
     demo_df = pl.concat([demo_df_collect.select("PatientID"), demo_onehot], how="horizontal")
 else:
     all_demo_categories = df.filter((pl.col("DataType") == "Demographics") & pl.col("DataCategory").is_not_null())\
@@ -236,7 +240,7 @@ else:
         all_demo_categories = ["unknown race"]
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     enc.fit(pl.Series(all_demo_categories).to_numpy().reshape(-1, 1))
-    empty_demo_onehot = pl.DataFrame(columns=[f"demo_{c}" for c in enc.categories_[0]])
+    empty_demo_onehot = pl.DataFrame(columns=[f"demo_{c}" for c in enc.categories_[0]]).cast(data_integer_dtype)
     demo_df = pl.DataFrame({"PatientID": []}).with_columns(pl.col("PatientID").cast(pl.Utf8)).hstack(empty_demo_onehot)
 
 base_df = base_df.join(demo_df.lazy(), on="PatientID", how="left")

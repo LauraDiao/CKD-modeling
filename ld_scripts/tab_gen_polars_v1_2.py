@@ -1,4 +1,4 @@
-# pandas to polars converted script
+# polars script with datatype toggles
 # read_csv
 import polars as pl
 from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
@@ -9,17 +9,37 @@ from tqdm import tqdm
 
 # change variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-output_dir_m = output_path + "ckd_tab_m_v1_100"  # 10, 100, full
-event_file =  "./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_100.csv" # 10, 100, all - path to the main event CSV file
-use_custom_separator = False
+subset_size = "10"  # 10, 100, full
+output_dir_m = output_path + f"ckd_tab_m_v1_{subset_size}"
+event_file =  f"./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
+use_custom_separator = True
 if use_custom_separator:
-    event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"  # path to all data
+    output_dir_m = output_path + "ckd_tab_m_v1_full"
+    event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
 output_fname = "ckd_processed_tab.csv"
+
+# --- New variables for data type toggles ---
+use_float64 = False # Set to True to use Float64, False for Float32
+use_int64 = False # Set to True to use Int64, False for Int16
+
+# --- Add type suffixes to output directory ---
+output_dir_m  += "_read_csv"
+output_dir_m += f"_{'f64' if use_float64 else 'f32'}"
+output_dir_m += f"_{'i64' if use_int64 else 'i16'}"
 
 try:
     os.makedirs(output_dir_m, exist_ok=True)
+    print(f"Created output directory: {output_dir_m}")
 except FileExistsError:
-    pass
+    print(f"Output directory already exists: {output_dir_m}")
+
+print(f"Processing started. Output directory: {output_dir_m}")
+print(f"Using DataNumeric data type: {'Float64' if use_float64 else 'Float32'}")
+print(f"Using DataInteger data type: {'Int64' if use_int64 else 'Int16'}")
+
+# --- Determine data types based on toggles ---
+data_numeric_dtype = pl.Float64 if use_float64 else pl.Float32
+data_integer_dtype = pl.Int64 if use_int64 else pl.Int16
 
 # Setup logging
 log_file_path = os.path.join(output_dir_m, "tab_gen_m.log")
@@ -31,7 +51,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 logger.info(f"Processing started. Output directory: {output_dir_m}")
-
 
 # -----------------------------
 # Load and preprocess with Polars
@@ -59,7 +78,7 @@ df = df.with_columns(
     pl.col("PatientID").cast(pl.Utf8, strict=False),
     pl.col("EventTimeStamp").cast(pl.Utf8, strict=False),
     pl.col("DataCategory").cast(pl.Utf8, strict=False),
-    pl.col("DataNumeric").cast(pl.Float64, strict=False),
+    pl.col("DataNumeric").cast(data_numeric_dtype, strict=False),
     pl.col("DataType").cast(pl.Utf8, strict=False),
 )
 
@@ -130,7 +149,7 @@ def gfr_to_rank(gfr):
 
 base_df = base_df.with_columns(
     pl.col("GFR_combined").map_elements(gfr_to_stage, return_dtype=pl.Utf8).alias("CKD_stage"),
-    pl.col("GFR_combined").map_elements(gfr_to_rank, return_dtype=pl.Float64).alias("CKD_rank")
+    pl.col("GFR_combined").map_elements(gfr_to_rank, return_dtype=data_numeric_dtype).alias("CKD_rank")
 )
 
 # Enforce monotonic CKD staging using a cumulative maximum, a faster and more robust method
@@ -163,7 +182,7 @@ diag_df = df.filter(pl.col("DataType") == "Diagnosis").with_columns(
 
 mlb_diag = MultiLabelBinarizer()
 diag_features = mlb_diag.fit_transform(diag_df["ICD_list"])
-diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_])
+diag_onehot = pl.DataFrame(diag_features.astype(data_integer_dtype), schema=[f"diag_{c}" for c in mlb_diag.classes_])
 diag_df_onehot = pl.concat([diag_df.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
 
 base_df = base_df.join(diag_df_onehot, on=["PatientID", "EventDate"], how="left")
@@ -178,7 +197,7 @@ med_df = df.filter(pl.col("DataType") == "Medications").with_columns(
 
 mlb_med = MultiLabelBinarizer()
 med_features = mlb_med.fit_transform(med_df["med_list"])
-med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_])
+med_onehot = pl.DataFrame(med_features.astype(data_integer_dtype), schema=[f"med_{c}" for c in mlb_med.classes_])
 med_df_onehot = pl.concat([med_df.select("PatientID", "EventDate"), med_onehot], how="horizontal")
 
 base_df = base_df.join(med_df_onehot, on=["PatientID", "EventDate"], how="left")
@@ -228,7 +247,7 @@ if not demo_df.is_empty():
     )
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     demo_encoded = enc.fit_transform(demo_df.select("demo_string").to_numpy())
-    demo_onehot = pl.DataFrame(demo_encoded, schema=[f"demo_{c}" for c in enc.categories_[0]])
+    demo_onehot = pl.DataFrame(demo_encoded.astype(data_integer_dtype), schema=[f"demo_{c}" for c in enc.categories_[0]])
     demo_df = pl.concat([demo_df.select("PatientID"), demo_onehot], how="horizontal")
 else:
     # Handle case with no demographics data by creating a dummy dataframe with the correct schema
@@ -238,7 +257,7 @@ else:
         all_demo_categories = [""] # Ensure there is at least one category to fit the encoder
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     enc.fit(pl.Series(all_demo_categories).to_numpy().reshape(-1, 1))
-    empty_demo_onehot = pl.DataFrame(enc.transform([[""]]), schema=[f"demo_{c}" for c in enc.categories_[0]])
+    empty_demo_onehot = pl.DataFrame(enc.transform([[""]]).astype(data_integer_dtype), schema=[f"demo_{c}" for c in enc.categories_[0]])
     demo_df = pl.DataFrame({"PatientID": [], "demo_string": []}).with_columns(
         pl.col("PatientID").cast(pl.Utf8)
     )
