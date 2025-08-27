@@ -36,7 +36,7 @@ except FileExistsError:
 
 print(f"Processing started. Output directory: {output_dir_m}")
 print(f"Using DataNumeric data type: {'Float64' if use_float64 else 'Float32'}")
-print(f"Using PatientID data type: {'Int64' if use_int64 else 'Int16'}")
+print(f"Using DataInteger data type: {'Int64' if use_int64 else 'Int16'}")
 
 # --- Determine data types based on toggles ---
 data_numeric_dtype = pl.Float64 if use_float64 else pl.Float32

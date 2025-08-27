@@ -171,22 +171,24 @@ diag_df = df.filter(pl.col("DataType") == "Diagnosis").with_columns(
 ).group_by("PatientID", "EventDate").agg(pl.col("ICD_clean").unique().sort().alias("ICD_list"))
 
 diag_df_collect = diag_df.collect()
-mlb_diag = MultiLabelBinarizer(sparse_output=True)
-diag_features_sparse = mlb_diag.fit_transform(diag_df_collect["ICD_list"])
-# Note: You cannot directly join a sparse matrix to a Polars DataFrame without it becoming dense.
-# The efficient way is to store it or process it separately.
-print(f"Sparse matrix for diagnoses has shape: {diag_features_sparse.shape}")
-print("Diagnosis one-hot encoding complete (as sparse matrix).")
+mlb_diag = MultiLabelBinarizer()
+diag_features = mlb_diag.fit_transform(diag_df_collect["ICD_list"])
+diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_]).cast(data_integer_dtype)
+diag_df_onehot = pl.concat([diag_df_collect.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
+base_df = base_df.join(diag_df_onehot.lazy().unique(subset=["PatientID", "EventDate"]), on=["PatientID", "EventDate"], how="left")
+print("Diagnosis one-hot encoding complete.")
 
 med_df = df.filter(pl.col("DataType") == "Medications").with_columns(
     pl.col("DataCategory").str.to_uppercase().str.replace(" ", "_").alias("med_clean")
 ).group_by("PatientID", "EventDate").agg(pl.col("med_clean").unique().sort().alias("med_list"))
 
 med_df_collect = med_df.collect()
-mlb_med = MultiLabelBinarizer(sparse_output=True)
-med_features_sparse = mlb_med.fit_transform(med_df_collect["med_list"])
-print(f"Sparse matrix for medications has shape: {med_features_sparse.shape}")
-print("Medication one-hot encoding complete (as sparse matrix).")
+mlb_med = MultiLabelBinarizer()
+med_features = mlb_med.fit_transform(med_df_collect["med_list"])
+med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_]).cast(data_integer_dtype)
+med_df_onehot = pl.concat([med_df_collect.select("PatientID", "EventDate"), med_onehot], how="horizontal")
+base_df = base_df.join(med_df_onehot.lazy().unique(subset=["PatientID", "EventDate"]), on=["PatientID", "EventDate"], how="left")
+print("Medication one-hot encoding complete.")
 
 lab_df = df.filter(
     (pl.col("DataType") == "Labs") & (pl.col("DataNumeric").is_not_null())
@@ -228,20 +230,22 @@ if not demo_df_collect.is_empty():
     demo_df_collect = demo_df_collect.with_columns(
         pl.col("DataCategory").map_elements(format_demographics).alias("demo_string")
     )
-    enc = OneHotEncoder(sparse_output=True, handle_unknown="ignore")
-    demo_encoded_sparse = enc.fit_transform(demo_df_collect.select("demo_string").to_numpy())
-    print(f"Sparse matrix for demographics has shape: {demo_encoded_sparse.shape}")
-    # You would typically save this sparse matrix and the encoder classes for later use.
+    enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
+    demo_encoded = enc.fit_transform(demo_df_collect.select("demo_string").to_numpy())
+    demo_onehot = pl.DataFrame(demo_encoded, schema=[f"demo_{c}" for c in enc.categories_[0]]).cast(data_integer_dtype)
+    demo_df = pl.concat([demo_df_collect.select("PatientID"), demo_onehot], how="horizontal")
 else:
     all_demo_categories = df.filter((pl.col("DataType") == "Demographics") & pl.col("DataCategory").is_not_null())\
                             .select(pl.col("DataCategory").map_elements(format_demographics).unique()).collect().to_series().to_list()
     if not all_demo_categories:
         all_demo_categories = ["unknown race"]
-    enc = OneHotEncoder(sparse_output=True, handle_unknown="ignore")
+    enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     enc.fit(pl.Series(all_demo_categories).to_numpy().reshape(-1, 1))
+    empty_demo_onehot = pl.DataFrame(columns=[f"demo_{c}" for c in enc.categories_[0]]).cast(data_integer_dtype)
+    demo_df = pl.DataFrame({"PatientID": []}).with_columns(pl.col("PatientID").cast(pl.Utf8)).hstack(empty_demo_onehot)
 
-# The demographics are not joined to the main dataframe for this example to demonstrate the sparse method.
-print("Demographics one-hot encoding complete (as sparse matrix).")
+base_df = base_df.join(demo_df.lazy().unique(subset="PatientID"), on="PatientID", how="left")
+print("Demographics one-hot encoding complete.")
 
 # -----------------------------
 # Final report
