@@ -10,7 +10,7 @@ from memory_profiler import memory_usage
 # variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
 custom_separator = True # <<
-if custom_separator = False: 
+if not custom_separator:  
     subset_size = "10"  # 10, 100, full # <<
     output_dir = output_path + f"ckd_tab_{subset_size}"
     event_file =  f"./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"

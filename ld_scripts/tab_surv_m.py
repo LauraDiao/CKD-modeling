@@ -22,12 +22,12 @@ from datetime import timedelta # Added for future label generation
 
 # changes
 prediction_period = 365 # 365
-tab_path = "./../../../commonfilesharePHI/ldiao/ckd_project/ckd_tab_m_full" # 10, 100, full
-tab_path += "/ckd_processed_tab.csv"
+tab_size = "10" # 10, 100, full
+tab_path = f"./../../../commonfilesharePHI/ldiao/ckd_project/ckd_tab_{tab_size}/ckd_processed_tab.csv" 
 years = str(round(prediction_period/365))
-filtering_stage = False
+filter_ckd_stage = False
 mod_output_dir = ""
-if filtering_stage: 
+if filter_ckd_stage: 
     mod_output_dir = "_filter_stage_3" # ""
 
 logging.basicConfig(
@@ -1209,11 +1209,10 @@ def main():
         return true
 
     # change 
-    if filtering_stage: 
+    if filter_ckd_stage: 
         metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
         metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
         logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
-        
 
     # Label 1: Current CKD stage >= 4
     metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_clean'].apply(lambda x: 1 if x >= 4 else 0)
