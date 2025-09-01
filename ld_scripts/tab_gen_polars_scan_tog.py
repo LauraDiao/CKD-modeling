@@ -1,5 +1,4 @@
 # polars script with datatype toggles
-# modified to run in batches with sparse matrix for memory handling
 # scan_csv
 import polars as pl
 from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
@@ -9,45 +8,44 @@ import logging
 from tqdm import tqdm
 from memory_profiler import memory_usage
 
-# --- New variables for data type toggles ---
-use_float64 = False # Set to True to use Float64, False for Float32
-use_int64 = False # Set to True to use Int64, False for Int32
-
-# change variables
+# variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-subset_size = "10"  # 10, 100, full
-output_dir_m = output_path + f"ckd_tab_m_v1_{subset_size}"
-event_file =  f"./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
-use_custom_separator = True
-if use_custom_separator:
-    output_dir_m = output_path + "ckd_tab_m_v1_full"
+custom_separator = True # <<
+if custom_separator = False: 
+    subset_size = "10"  # 10, 100, full # <<
+    output_dir = output_path + f"ckd_tab_{subset_size}"
+    event_file =  f"./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
+if custom_separator:
+    output_dir = output_path + "ckd_tab_full"
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
 output_fname = "ckd_processed_tab.csv"
 
-# --- Add type suffixes to output directory ---
-output_dir_m  += "_scan_csv" # first run doesnt have this in label
-output_dir_m += f"_{'f64' if use_float64 else 'f32'}"
-output_dir_m += f"_{'i64' if use_int64 else 'i32'}"
+# --- data type toggles ---
+use_float64 = False # True to use Float64, False for other type
+use_int64 = False # True to use Int64, False for other type
+# --- data types based on toggles ---
+data_numeric_dtype = pl.Float64 if use_float64 else pl.Float32
+data_integer_dtype = pl.Int64 if use_int64 else pl.Int16
+# --- add type suffixes to output directory ---
+output_dir  += f"_{'f64' if use_float64 else 'f32'}"
+output_dir += f"_{'i64' if use_int64 else 'i16'}"
+output_dir  += "_scan" # <<
 
 try:
-    os.makedirs(output_dir_m, exist_ok=True)
-    print(f"Created output directory: {output_dir_m}")
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Created output directory: {output_dir}")
 except FileExistsError:
-    print(f"Output directory already exists: {output_dir_m}")
+    print(f"Output directory already exists: {output_dir}")
 
-print(f"Processing started. Output directory: {output_dir_m}")
+print(f"Processing started. Output directory: {output_dir}")
 print(f"Using DataNumeric data type: {'Float64' if use_float64 else 'Float32'}")
-print(f"Using DataInteger data type: {'Int64' if use_int64 else 'Int32'}")
-
-# --- Determine data types based on toggles ---
-data_numeric_dtype = pl.Float64 if use_float64 else pl.Float32
-data_integer_dtype = pl.Int64 if use_int64 else pl.Int32
+print(f"Using DataInteger data type: {'Int64' if use_int64 else 'Int16'}")
 
 # -----------------------------
 # Load and preprocess with Polars
 # -----------------------------
 print("--- Starting Data Loading and Preprocessing ---")
-if use_custom_separator:
+if custom_separator:
     df = pl.scan_csv(
         event_file,
         separator='$',
@@ -175,7 +173,7 @@ mlb_diag = MultiLabelBinarizer()
 diag_features = mlb_diag.fit_transform(diag_df_collect["ICD_list"])
 diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_]).cast(data_integer_dtype)
 diag_df_onehot = pl.concat([diag_df_collect.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
-base_df = base_df.join(diag_df_onehot.lazy().unique(subset=["PatientID", "EventDate"]), on=["PatientID", "EventDate"], how="left")
+base_df = base_df.join(diag_df_onehot.lazy(), on=["PatientID", "EventDate"], how="left")
 print("Diagnosis one-hot encoding complete.")
 
 med_df = df.filter(pl.col("DataType") == "Medications").with_columns(
@@ -187,7 +185,7 @@ mlb_med = MultiLabelBinarizer()
 med_features = mlb_med.fit_transform(med_df_collect["med_list"])
 med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_]).cast(data_integer_dtype)
 med_df_onehot = pl.concat([med_df_collect.select("PatientID", "EventDate"), med_onehot], how="horizontal")
-base_df = base_df.join(med_df_onehot.lazy().unique(subset=["PatientID", "EventDate"]), on=["PatientID", "EventDate"], how="left")
+base_df = base_df.join(med_df_onehot.lazy(), on=["PatientID", "EventDate"], how="left")
 print("Medication one-hot encoding complete.")
 
 lab_df = df.filter(
@@ -244,7 +242,7 @@ else:
     empty_demo_onehot = pl.DataFrame(columns=[f"demo_{c}" for c in enc.categories_[0]]).cast(data_integer_dtype)
     demo_df = pl.DataFrame({"PatientID": []}).with_columns(pl.col("PatientID").cast(pl.Utf8)).hstack(empty_demo_onehot)
 
-base_df = base_df.join(demo_df.lazy().unique(subset="PatientID"), on="PatientID", how="left")
+base_df = base_df.join(demo_df.lazy(), on="PatientID", how="left")
 print("Demographics one-hot encoding complete.")
 
 # -----------------------------
@@ -255,7 +253,7 @@ base_df_final = base_df.collect()
 print(f"[INFO] Final tabular shape: {base_df_final.shape}")
 print(f"[INFO] Sample features:\n{base_df_final.head()}")
 print(f"[INFO] CKD stage counts:\n{base_df_final['CKD_stage'].value_counts(sort=True)}")
-base_df_path = os.path.join(output_dir_m, output_fname)
+base_df_path = os.path.join(output_dir, output_fname)
 print(f"Writing final DataFrame of shape {base_df_final.shape} to {base_df_path}")
 base_df_final.write_csv(base_df_path)
 print("End of Tabular Generation")

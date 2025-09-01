@@ -7,39 +7,39 @@ import logging
 from tqdm import tqdm
 from memory_profiler import memory_usage
 
-# --- New variables for data type toggles ---
-use_float64 = False # Set to True to use Float64, False for Float32
-use_int64 = False # Set to True to use Int64, False for Int16
-BATCH_SIZE = 100000  # Adjust based on your system's memory and performance
-
-# change variables
+# variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-subset_size = "10"  # 10, 100, full
-output_dir_m = output_path + f"ckd_tab_m_v1_{subset_size}"
-event_file =  f"./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
-use_custom_separator = True
-if use_custom_separator:
-    output_dir_m = output_path + "ckd_tab_m_v1_full_batched"
+custom_separator = True # <<
+if custom_separator = False: 
+    subset_size = "10"  # 10, 100, full # <<
+    output_dir = output_path + f"ckd_tab_{subset_size}"
+    event_file =  f"./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
+if custom_separator:
+    output_dir = output_path + "ckd_tab_full_batched"
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
-output_fname = "ckd_processed_tab_batched.csv"
+output_fname = "ckd_processed_tab.csv"
 
-# --- Add type suffixes to output directory ---
-output_dir_m  += f"_{'f64' if use_float64 else 'f32'}"
-output_dir_m += f"_{'i64' if use_int64 else 'i16'}"
-
-try:
-    os.makedirs(output_dir_m, exist_ok=True)
-    print(f"Created output directory: {output_dir_m}")
-except FileExistsError:
-    print(f"Output directory already exists: {output_dir_m}")
-
-print(f"Processing started. Output directory: {output_dir_m}")
-print(f"Using DataNumeric data type: {'Float64' if use_float64 else 'Float32'}")
-print(f"Using PatientID data type: {'Int64' if use_int64 else 'i16'}")
-
-# --- Determine data types based on toggles ---
+# --- data type toggles ---
+use_float64 = False # True to use Float64, False for other type
+use_int64 = False # True to use Int64, False for other type
+# --- data types based on toggles ---
 data_numeric_dtype = pl.Float64 if use_float64 else pl.Float32
 data_integer_dtype = pl.Int64 if use_int64 else pl.Int16
+# --- add type suffixes to output directory ---
+output_dir  += f"_{'f64' if use_float64 else 'f32'}"
+output_dir += f"_{'i64' if use_int64 else 'i16'}"
+output_dir  += "_scan_2" # <<
+BATCH_SIZE = 100000  # Adjust based on your system's memory and performance
+
+try:
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"Created output directory: {output_dir}")
+except FileExistsError:
+    print(f"Output directory already exists: {output_dir}")
+
+print(f"Processing started. Output directory: {output_dir}")
+print(f"Using DataNumeric data type: {'Float64' if use_float64 else 'Float32'}")
+print(f"Using PatientID data type: {'Int64' if use_int64 else 'i16'}")
 
 # -----------------------------
 # STEP 1: PRE-FIT ENCODERS ON UNIQUE CATEGORIES
@@ -49,7 +49,7 @@ data_integer_dtype = pl.Int64 if use_int64 else pl.Int16
 print("--- Pre-fitting One-Hot Encoders ---")
 lazy_df_full = pl.scan_csv(
     event_file,
-    separator='$' if use_custom_separator else ',',
+    separator='$' if custom_separator else ',',
     infer_schema_length=None,
     null_values="null"
 )
@@ -93,14 +93,14 @@ print("--- Encoders pre-fitted on unique categories ---")
 print("--- Starting batched data processing ---")
 reader = pl.read_csv_batched(
     event_file,
-    separator='$' if use_custom_separator else ',',
+    separator='$' if custom_separator else ',',
     infer_schema_length=None,
     null_values="null",
     batch_size=BATCH_SIZE
 )
 
 batch_counter = 0
-final_output_path = os.path.join(output_dir_m, output_fname)
+final_output_path = os.path.join(output_dir, output_fname)
 has_header_written = False
 
 while True:

@@ -21,13 +21,10 @@ from sklearn.metrics import (
 from datetime import timedelta # Added for future label generation
 
 # changes
-prediction_period = 365 # 365, 730, 1095
+prediction_period = 365 # 365
 tab_path = "./../../../commonfilesharePHI/ldiao/ckd_project/ckd_tab_m_full" # 10, 100, full
 tab_path += "/ckd_processed_tab.csv"
-# tab_size = "/ckd_processed_tab_full.csv"
-# tab_path =  "./../../../commonfilesharePHI/slee/ckd-optum" + tab_size
 years = str(round(prediction_period/365))
-# target_label_col=f'label_ckd_{years}_year_future' # remove
 filtering_stage = False
 mod_output_dir = ""
 if filtering_stage: 
