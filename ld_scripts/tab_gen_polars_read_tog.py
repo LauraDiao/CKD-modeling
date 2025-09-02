@@ -19,6 +19,7 @@ if custom_separator:
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
 output_fname = "ckd_processed_tab.csv"
 
+
 # --- data type toggles ---
 use_float64 = False # True to use Float64, False for other type
 use_int64 = False # True to use Int64, False for other type
@@ -36,6 +37,10 @@ output_dir  += "_read" # <<
 filter_ckd_stage = False
 if filter_ckd_stage: 
     output_dir  += "stage_filter" # ""
+
+
+print("CHECK: ")
+print(output_dir)
 
 try:
     os.makedirs(output_dir, exist_ok=True)
@@ -171,48 +176,73 @@ base_df = base_df.with_columns(
     .otherwise(pl.lit(None)).alias("CKD_stage")
 ).drop("CKD_rank", "CKD_rank_monotonic")
 
+# new function
+def icd_to_stage(icd):
+    """
+        'N18.1%': 1,
+        'N18.2%': 2, 
+        'N18.3%': 3, 
+        'N18.4%': 4, 
+        'N18.5%': 5, 
+        'N18.6%': 'ESRD', 
+        'N18.9%': 'CKD'
+    """
+    if icd is None:
+        return (None, 0)
+    if icd in 'N18.1%':
+        return ("1", 1)
+    if icd in 'N18.2%':
+        return ("2", 2)
+    if icd in 'N18.3%':
+        return ("3", 3)
+    if icd in 'N18.4%':
+        return ("4", 4)
+    return ("5", 5)
+
 # clean and filter ckd stage
-def clean_ckd_stage(value):
-    try:
-        # Handle cases like '3.1' or '3.2' if they are strings from CSV
-        val_float = float(value)
-        return int(val_float) # Truncate to integer stage
-    except ValueError:
-        if isinstance(value, str):
-            if value.lower() == '3a': return 3
-            if value.lower() == '3b': return 3 # Often grouped as stage 3
-            if value[0].isdigit():
-                return int(value[0])
-        return np.nan
-    except TypeError: # Handles if value is already NaN or None
-        return np.nan
+# def clean_ckd_stage(value):
+#     try:
+#         # Handle cases like '3.1' or '3.2' if they are strings from CSV
+#         val_float = float(value)
+#         return int(val_float) # Truncate to integer stage
+#     except ValueError:
+#         if isinstance(value, str):
+#             if value.lower() == '3a': return 3
+#             if value.lower() == '3b': return 3 # Often grouped as stage 3
+#             if value[0].isdigit():
+#                 return int(value[0])
+#         return np.nan
+#     except TypeError: # Handles if value is already NaN or None
+#         return np.nan
 
-def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
-    initial_patients = df[patient_id_col].nunique()
-    # Filter for visits where CKD stage is 3 or higher
-    df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
-    # Get unique PatientIDs from this filtered DataFrame
-    patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
+# def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
+#     initial_patients = df[patient_id_col].nunique()
+#     # Filter for visits where CKD stage is 3 or higher
+#     df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
+#     # Get unique PatientIDs from this filtered DataFrame
+#     patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
     
-    patients_removed = initial_patients - len(patient_ids_to_keep)
-    logger.info(f"Identified {len(patient_ids_to_keep)} patients with at least one visit at or above CKD stage 3.")
-    logger.info(f"Filtered out approximately {patients_removed} patients who are always below CKD stage 3.")
+#     patients_removed = initial_patients - len(patient_ids_to_keep)
+#     logger.info(f"Identified {len(patient_ids_to_keep)} patients with at least one visit at or above CKD stage 3.")
+#     logger.info(f"Filtered out approximately {patients_removed} patients who are always below CKD stage 3.")
     
-    return patient_ids_to_keep
+#     return patient_ids_to_keep
 
-if 'CKD_stage' in base_df.columns:
-    base_df['CKD_stage_clean'] = base_df['CKD_stage'].apply(clean_ckd_stage)
-    # Fill missing stages within a patient's record
-    base_df['CKD_stage_clean'] = base_df.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
-    base_df = base_df.dropna(subset=['CKD_stage_clean']) # Remove patients with no stage info
-    base_df['CKD_stage_clean'] = base_df['CKD_stage_clean'].astype(int)
-else:
-    logger.error("'CKD_stage' column not found in tabular data. Cannot proceed with label generation.")
+# if 'CKD_stage' in base_df.columns:
+#     base_df['CKD_stage_clean'] = base_df['CKD_stage'].apply(clean_ckd_stage)
+#     # Fill missing stages within a patient's record
+#     base_df['CKD_stage_clean'] = base_df.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
+#     base_df = base_df.dropna(subset=['CKD_stage_clean']) # Remove patients with no stage info
+#     base_df['CKD_stage_clean'] = base_df['CKD_stage_clean'].astype(int)
+# else:
+#     logger.error("'CKD_stage' column not found in tabular data. Cannot proceed with label generation.")
 
-if filtering_stage: 
-    base_df_patients = filter_patients_by_ckd_stage(base_df, 'CKD_stage_clean')
-    base_df = base_df[base_df["PatientID"].isin(base_df_patients)].copy()
-    logger.info(f"Shape of base_df after filtering for patients at or above stage 3: {base_df.shape}")
+# if filtering_stage: 
+#     base_df_patients = filter_patients_by_ckd_stage(base_df, 'CKD_stage_clean')
+#     base_df = base_df[base_df["PatientID"].isin(base_df_patients)].copy()
+#     logger.info(f"Shape of base_df after filtering for patients at or above stage 3: {base_df.shape}")
+
+# fix
 
 # -----------------------------
 # One-hot encode diagnoses (truncated ICD codes)
