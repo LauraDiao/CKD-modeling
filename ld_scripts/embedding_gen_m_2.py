@@ -8,19 +8,25 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from datetime import datetime
 
-# change variables
-event_path =  "./../../../commonfilesharePHI/slee/ckd-optum/" 
-# event_file = event_path + "patients_subset_100.csv" # 10, 100, all
 
-output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-# previous script runnning in 100 - check later
-output_dir_m = output_path + "ckd_embeddings_m_full_v2" # 10, 100, full
+# change variables 
+icd_file = "/opt/data/commonfilesharePHI/ldiao/ckd_project/icd_mapping.csv"
 output_fname = 'patient_embedding_metadata.csv'
 
-event_file =  "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt" # path to all data
+custom_separator = False # <<
+if not custom_separator: 
+    subset_size = "10"  # 10, 100, all/full # <<
+    output_dir = f"/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_{subset_size}"
+    event_file =  f"/opt/data/commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
+if custom_separator:
+    output_dir = "/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_full"
+    event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
+
+output_dir += "v2" # <<
+print(output_dir)
 
 try:
-    os.mkdir(output_dir_m)
+    os.mkdir(output_dir)
 except FileExistsError:
     pass
 
@@ -30,9 +36,9 @@ def parse_arguments():
     )
     parser.add_argument("--csv", type=str, default=event_file,
                         help="Path to the main event CSV file.")
-    parser.add_argument("--icd", type=str, default=event_path + "icd_mapping.csv",
+    parser.add_argument("--icd", type=str, default=icd_file,
                         help="Path to the ICD mapping CSV file.")
-    parser.add_argument("--output_dir", type=str, default=output_dir_m,
+    parser.add_argument("--output_dir", type=str, default=output_dir,
                         help="Directory in which to save the generated embeddings and metadata.")
     parser.add_argument("--model_name", type=str, default="/opt/data/commonfilesharePHI/slee/MEME/clinicalBERT-emily",
                         help="Pretrained transformer model to use for embeddings.")

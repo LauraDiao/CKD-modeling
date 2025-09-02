@@ -10,7 +10,7 @@ from memory_profiler import memory_usage
 
 # variables
 output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-custom_separator = True # <<
+custom_separator = False # <<
 if not custom_separator: 
     subset_size = "10"  # 10, 100, full # <<
     output_dir = output_path + f"ckd_tab_{subset_size}"
@@ -197,10 +197,11 @@ lab_df = df.filter(
 lab_df_eager = lab_df.collect()
 lab_pivot = lab_df_eager.pivot(
     index=["PatientID", "EventDate"],
-    columns="LabCategory",
+    on="LabCategory",
     values="DataNumeric",
     aggregate_function="first",
 )
+
 rename_dict = {c: f"lab_{c}" for c in lab_pivot.columns[2:]}
 lab_pivot_renamed = lab_pivot.rename(rename_dict).lazy()
 base_df = base_df.join(lab_pivot_renamed, on=["PatientID", "EventDate"], how="left")

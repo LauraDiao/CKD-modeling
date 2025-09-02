@@ -8,17 +8,15 @@ import logging
 from tqdm import tqdm
 
 # variables
-output_path = "./../../../commonfilesharePHI/ldiao/ckd_project/"
-custom_separator = False # <<
+output_fname = "ckd_processed_tab.csv"
+custom_separator = True # <<
 if not custom_separator: 
     subset_size = "10"  # 10, 100, full # <<
-    output_dir = output_path + f"ckd_tab_{subset_size}"
-    event_file =  f"./../../../commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
+    output_dir = f"/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_tab_{subset_size}"
+    event_file =  f"/opt/data/commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
 if custom_separator:
-    output_dir = output_path + "ckd_tab_full"
+    output_dir = "/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_tab_full"
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
-output_fname = "ckd_processed_tab.csv"
-
 
 # --- data type toggles ---
 use_float64 = False # True to use Float64, False for other type
@@ -33,14 +31,17 @@ output_dir += f"_{'i64' if use_int64 else 'i16'}"
 # scan vs read csv
 output_dir  += "_read" # <<
 
+# icd vs gfr to ckd stage
+use_gfr = True # << uses icd otherwise
+if use_gfr:
+    output_dir += "_gfr"
+if not use_gfr:
+    output_dir += "_icd"
+
 # filter ckd stage
-filter_ckd_stage = False
+filter_ckd_stage = True # <<
 if filter_ckd_stage: 
-    output_dir  += "stage_filter" # ""
-
-
-print("CHECK: ")
-print(output_dir)
+    output_dir  += "_stage_filter" 
 
 try:
     os.makedirs(output_dir, exist_ok=True)
@@ -101,7 +102,6 @@ df = df.with_columns(
     pl.col("EventTimeStamp").dt.date().alias("EventDate")
 )
 
-
 # -----------------------------
 # Base: full patient-day index
 # -----------------------------
@@ -111,138 +111,227 @@ all_days = all_days.drop_nulls("EventDate")
 # -----------------------------
 # Extract and forward-fill GFR
 # -----------------------------
-gfr_df = df.filter(
-    (pl.col("DataCategory").str.contains("(?i)GFR|GFREST")) &
-    (pl.col("DataNumeric").is_not_null())
-).select("PatientID", "EventDate", "DataNumeric")
+if use_gfr: 
+    gfr_df = df.filter(
+        (pl.col("DataCategory").str.contains("(?i)GFR|GFREST")) &
+        (pl.col("DataNumeric").is_not_null())
+    ).select("PatientID", "EventDate", "DataNumeric")
 
-gfr_daywise = gfr_df.group_by("PatientID", "EventDate").first().rename({"DataNumeric": "GFR_combined"})
+    gfr_daywise = gfr_df.group_by("PatientID", "EventDate").first().rename({"DataNumeric": "GFR_combined"})
 
-base_df = all_days.join(gfr_daywise, on=["PatientID", "EventDate"], how="left").sort(["PatientID", "EventDate"])
+    base_df = all_days.join(gfr_daywise, on=["PatientID", "EventDate"], how="left").sort(["PatientID", "EventDate"])
 
 
-# Forward-fill GFR
-base_df = base_df.with_columns(
-    pl.col("GFR_combined").forward_fill().over("PatientID")
-)
+    # Forward-fill GFR
+    base_df = base_df.with_columns(
+        pl.col("GFR_combined").forward_fill().over("PatientID")
+    )
 
-def gfr_to_stage(gfr):
-    if gfr >= 90:
-        return "1"
-    elif gfr >= 60:
-        return "2"
-    elif gfr >= 45:
-        return "3a"
-    elif gfr >= 30:
-        return "3b"
-    elif gfr >= 15:
-        return "4"
-    elif gfr is None:
-        return None
-    else:
+    def gfr_to_stage(gfr):
+        if gfr >= 90:
+            return "1"
+        elif gfr >= 60:
+            return "2"
+        elif gfr >= 45:
+            return "3a"
+        elif gfr >= 30:
+            return "3b"
+        elif gfr >= 15:
+            return "4"
+        elif gfr is None:
+            return None
+        else:
+            return "5"
+
+    def gfr_to_rank(gfr):
+        if gfr >= 90:
+            return 1
+        elif gfr >= 60:
+            return 2
+        elif gfr >= 45:
+            return 3.1
+        elif gfr >= 30:
+            return 3.2
+        elif gfr >= 15:
+            return 4
+        elif gfr is None:
+            return 0
+        else:
+            return 5
+
+    base_df = base_df.with_columns(
+        pl.col("GFR_combined").map_elements(gfr_to_stage, return_dtype=pl.Utf8).alias("CKD_stage"),
+        pl.col("GFR_combined").map_elements(gfr_to_rank, return_dtype=data_numeric_dtype).alias("CKD_rank")
+    )
+
+    # Enforce monotonic CKD staging using a cumulative maximum, a faster and more robust method
+    base_df = base_df.with_columns(
+        pl.col("CKD_rank").fill_null(0).cum_max().over("PatientID").alias("CKD_rank_monotonic")
+    ).with_columns(
+        pl.when(pl.col("CKD_rank_monotonic") == 1).then(pl.lit("1"))
+        .when(pl.col("CKD_rank_monotonic") == 2).then(pl.lit("2"))
+        .when(pl.col("CKD_rank_monotonic") == 3.1).then(pl.lit("3a"))
+        .when(pl.col("CKD_rank_monotonic") == 3.2).then(pl.lit("3b"))
+        .when(pl.col("CKD_rank_monotonic") == 4).then(pl.lit("4"))
+        .when(pl.col("CKD_rank_monotonic") == 5).then(pl.lit("5"))
+        .otherwise(pl.lit(None)).alias("CKD_stage")
+    ).drop("CKD_rank", "CKD_rank_monotonic")
+
+# -----------------------------
+# Extract and forward-fill ICD
+# -----------------------------
+if not use_gfr: 
+    icd_filter = "(?i)^N18\..*" 
+    # all icd codes: (?i)\."
+    icd_df = df.filter(
+        (pl.col("DataCategory").str.contains(icd_filter)) &
+        (pl.col("DataNumeric").is_not_null())
+    ).select("PatientID", "EventDate", "DataCategory")
+
+    icd_daywise = icd_df.group_by("PatientID", "EventDate").first().rename({"DataCategory": "ICD_combined"})
+    base_df = all_days.join(icd_daywise, on=["PatientID", "EventDate"], how="left").sort(["PatientID", "EventDate"])
+    # base_df.head()
+
+    # Forward-fill ICD
+    base_df = base_df.with_columns(
+        pl.col("ICD_combined").forward_fill().over("PatientID")
+    )
+    # base_df.head()
+
+    def icd_to_stage(icd):
+        """
+            'N18.1%': 1,
+            'N18.2%': 2, 
+            'N18.3%': 3, 
+            'N18.4%': 4, 
+            'N18.5%': 5, 
+            'N18.6%': 'ESRD', 
+            'N18.9%': 'CKD'
+        """
+        if icd is None:
+            return None
+        if icd in 'N18.1%':
+            return "1"
+        if icd in 'N18.2%':
+            return "2"
+        if icd in 'N18.3%':
+            return "3"
+        if icd in 'N18.4%':
+            return "4"
         return "5"
 
-def gfr_to_rank(gfr):
-    if gfr >= 90:
-        return 1
-    elif gfr >= 60:
-        return 2
-    elif gfr >= 45:
-        return 3.1
-    elif gfr >= 30:
-        return 3.2
-    elif gfr >= 15:
-        return 4
-    elif gfr is None:
-        return 0
-    else:
+    def icd_to_rank(icd):
+        """
+            'N18.1%': 1,
+            'N18.2%': 2, 
+            'N18.3%': 3, 
+            'N18.4%': 4, 
+            'N18.5%': 5, 
+            'N18.6%': 'ESRD', 
+            'N18.9%': 'CKD'
+        """
+        if icd is None:
+            return 0
+        if icd in 'N18.1%':
+            return 1
+        if icd in 'N18.2%':
+            return 2
+        if icd in 'N18.3%':
+            return 3
+        if icd in 'N18.4%':
+            return 4
         return 5
 
-base_df = base_df.with_columns(
-    pl.col("GFR_combined").map_elements(gfr_to_stage, return_dtype=pl.Utf8).alias("CKD_stage"),
-    pl.col("GFR_combined").map_elements(gfr_to_rank, return_dtype=data_numeric_dtype).alias("CKD_rank")
-)
+    base_df = base_df.with_columns(
+        pl.col("ICD_combined").map_elements(icd_to_stage, return_dtype=pl.Utf8).alias("CKD_stage"),
+        pl.col("ICD_combined").map_elements(icd_to_rank, return_dtype=data_numeric_dtype).alias("CKD_rank")
+    )
 
-# Enforce monotonic CKD staging using a cumulative maximum, a faster and more robust method
-base_df = base_df.with_columns(
-    pl.col("CKD_rank").fill_null(0).cum_max().over("PatientID").alias("CKD_rank_monotonic")
-).with_columns(
-    pl.when(pl.col("CKD_rank_monotonic") == 1).then(pl.lit("1"))
-    .when(pl.col("CKD_rank_monotonic") == 2).then(pl.lit("2"))
-    .when(pl.col("CKD_rank_monotonic") == 3.1).then(pl.lit("3a"))
-    .when(pl.col("CKD_rank_monotonic") == 3.2).then(pl.lit("3b"))
-    .when(pl.col("CKD_rank_monotonic") == 4).then(pl.lit("4"))
-    .when(pl.col("CKD_rank_monotonic") == 5).then(pl.lit("5"))
-    .otherwise(pl.lit(None)).alias("CKD_stage")
-).drop("CKD_rank", "CKD_rank_monotonic")
+    # Enforce monotonic CKD staging using a cumulative maximum, a faster and more robust method
+    base_df = base_df.with_columns(
+        pl.col("CKD_rank").fill_null(0).cum_max().over("PatientID").alias("CKD_rank_monotonic")
+    ).with_columns(
+        pl.when(pl.col("CKD_rank_monotonic") == 1).then(pl.lit("1"))
+        .when(pl.col("CKD_rank_monotonic") == 2).then(pl.lit("2"))
+        .when(pl.col("CKD_rank_monotonic") == 3.1).then(pl.lit("3a"))
+        .when(pl.col("CKD_rank_monotonic") == 3.2).then(pl.lit("3b"))
+        .when(pl.col("CKD_rank_monotonic") == 4).then(pl.lit("4"))
+        .when(pl.col("CKD_rank_monotonic") == 5).then(pl.lit("5"))
+        .otherwise(pl.lit(None)).alias("CKD_stage")
+    ).drop("CKD_rank", "CKD_rank_monotonic")
 
-# new function
-def icd_to_stage(icd):
-    """
-        'N18.1%': 1,
-        'N18.2%': 2, 
-        'N18.3%': 3, 
-        'N18.4%': 4, 
-        'N18.5%': 5, 
-        'N18.6%': 'ESRD', 
-        'N18.9%': 'CKD'
-    """
-    if icd is None:
-        return (None, 0)
-    if icd in 'N18.1%':
-        return ("1", 1)
-    if icd in 'N18.2%':
-        return ("2", 2)
-    if icd in 'N18.3%':
-        return ("3", 3)
-    if icd in 'N18.4%':
-        return ("4", 4)
-    return ("5", 5)
-
+# -----------------------------
 # clean and filter ckd stage
-# def clean_ckd_stage(value):
-#     try:
-#         # Handle cases like '3.1' or '3.2' if they are strings from CSV
-#         val_float = float(value)
-#         return int(val_float) # Truncate to integer stage
-#     except ValueError:
-#         if isinstance(value, str):
-#             if value.lower() == '3a': return 3
-#             if value.lower() == '3b': return 3 # Often grouped as stage 3
-#             if value[0].isdigit():
-#                 return int(value[0])
-#         return np.nan
-#     except TypeError: # Handles if value is already NaN or None
-#         return np.nan
+# -----------------------------
+def clean_ckd_stage(value):
+    try:
+        # Handle cases like '3.1' or '3.2' if they are strings from CSV
+        val_float = float(value)
+        return int(val_float) # Truncate to integer stage
+    except ValueError:
+        if isinstance(value, str):
+            if value.lower() == '3a': return 3
+            if value.lower() == '3b': return 3 # Often grouped as stage 3
+            if value[0].isdigit():
+                return int(value[0])
+        return np.nan
+    except TypeError: # Handles if value is already NaN or None
+        return np.nan
 
-# def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
-#     initial_patients = df[patient_id_col].nunique()
-#     # Filter for visits where CKD stage is 3 or higher
-#     df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
-#     # Get unique PatientIDs from this filtered DataFrame
-#     patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
+def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
+    initial_patients = df[patient_id_col].nunique()
+    # Filter for visits where CKD stage is 3 or higher
+    df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
+    # Get unique PatientIDs from this filtered DataFrame
+    patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
     
-#     patients_removed = initial_patients - len(patient_ids_to_keep)
-#     logger.info(f"Identified {len(patient_ids_to_keep)} patients with at least one visit at or above CKD stage 3.")
-#     logger.info(f"Filtered out approximately {patients_removed} patients who are always below CKD stage 3.")
+    patients_removed = initial_patients - len(patient_ids_to_keep)
+    logger.info(f"Identified {len(patient_ids_to_keep)} patients with at least one visit at or above CKD stage 3.")
+    logger.info(f"Filtered out approximately {patients_removed} patients who are always below CKD stage 3.")
     
-#     return patient_ids_to_keep
+    return patient_ids_to_keep
 
-# if 'CKD_stage' in base_df.columns:
-#     base_df['CKD_stage_clean'] = base_df['CKD_stage'].apply(clean_ckd_stage)
-#     # Fill missing stages within a patient's record
-#     base_df['CKD_stage_clean'] = base_df.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
-#     base_df = base_df.dropna(subset=['CKD_stage_clean']) # Remove patients with no stage info
-#     base_df['CKD_stage_clean'] = base_df['CKD_stage_clean'].astype(int)
-# else:
-#     logger.error("'CKD_stage' column not found in tabular data. Cannot proceed with label generation.")
+def process_ckd_stage(df: pl.DataFrame, ckd_column: str, patient_id_col: str = 'PatientID', filtering_stage= filter_ckd_stage):
+    if ckd_column not in df.columns:
+        logger.error(f"'{ckd_column}' column not found in tabular data. Cannot proceed with label generation.")
+        return None
 
-# if filtering_stage: 
-#     base_df_patients = filter_patients_by_ckd_stage(base_df, 'CKD_stage_clean')
-#     base_df = base_df[base_df["PatientID"].isin(base_df_patients)].copy()
-#     logger.info(f"Shape of base_df after filtering for patients at or above stage 3: {base_df.shape}")
+    # Define the name of the new cleaned column
+    clean_col_name = f'{ckd_column}_clean'
 
-# fix
+    # Apply the element-wise cleaning function.
+    # Note: map_elements can be less performant than vectorized operations,
+    # but it is the closest equivalent to pandas.apply for a custom Python function.
+    base_df = df.with_columns(
+        pl.col(ckd_column).map_elements(clean_ckd_stage, return_dtype=pl.Int64).alias(clean_col_name)
+    )
+
+    # Use Polars' window functions to backfill and forward fill nulls within each patient group.
+    base_df = base_df.with_columns(
+        pl.col(clean_col_name).fill_null(strategy='backward').over(patient_id_col).alias(clean_col_name)
+    ).with_columns(
+        pl.col(clean_col_name).fill_null(strategy='forward').over(patient_id_col).alias(clean_col_name)
+    )
+    
+    # Remove patients with no stage info after the fill operations.
+    base_df = base_df.drop_nulls(subset=[clean_col_name])
+    # note: icd vs gfr - this will impact patient counts
+    
+    if filtering_stage:
+        patients_to_keep = base_df.group_by(patient_id_col).agg(
+            pl.col(clean_col_name).max().ge(3).alias("keep_patient")
+        ).filter(pl.col("keep_patient")).select(patient_id_col)
+        
+        # Use an inner join to keep only the rows for the filtered patients.
+        base_df = base_df.join(patients_to_keep, on=patient_id_col, how="inner")
+        
+        logger.info(f"Shape of base_df after filtering for patients at or above stage 3: {base_df.shape}")
+    
+    return base_df
+
+ckd_column = "CKD_stage" # "CKD_stage"
+base_df = process_ckd_stage(base_df, ckd_column)
+base_df.head()
 
 # -----------------------------
 # One-hot encode diagnoses (truncated ICD codes)
@@ -260,7 +349,7 @@ diag_df = df.filter(pl.col("DataType") == "Diagnosis").with_columns(
 
 mlb_diag = MultiLabelBinarizer()
 diag_features = mlb_diag.fit_transform(diag_df["ICD_list"])
-diag_onehot = pl.DataFrame(diag_features.astype(data_integer_dtype), schema=[f"diag_{c}" for c in mlb_diag.classes_])
+diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_]).cast(data_integer_dtype)
 diag_df_onehot = pl.concat([diag_df.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
 
 base_df = base_df.join(diag_df_onehot, on=["PatientID", "EventDate"], how="left")
@@ -275,7 +364,7 @@ med_df = df.filter(pl.col("DataType") == "Medications").with_columns(
 
 mlb_med = MultiLabelBinarizer()
 med_features = mlb_med.fit_transform(med_df["med_list"])
-med_onehot = pl.DataFrame(med_features.astype(data_integer_dtype), schema=[f"med_{c}" for c in mlb_med.classes_])
+med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_]).cast(data_integer_dtype)
 med_df_onehot = pl.concat([med_df.select("PatientID", "EventDate"), med_onehot], how="horizontal")
 
 base_df = base_df.join(med_df_onehot, on=["PatientID", "EventDate"], how="left")
@@ -291,7 +380,7 @@ lab_df = df.filter(
 
 lab_pivot = lab_df.pivot(
     index=["PatientID", "EventDate"],
-    columns="LabCategory",
+    on="LabCategory",
     values="DataNumeric",
     aggregate_function="first",
 )
@@ -325,7 +414,7 @@ if not demo_df.is_empty():
     )
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     demo_encoded = enc.fit_transform(demo_df.select("demo_string").to_numpy())
-    demo_onehot = pl.DataFrame(demo_encoded.astype(data_integer_dtype), schema=[f"demo_{c}" for c in enc.categories_[0]])
+    demo_onehot = pl.DataFrame(demo_encoded, schema=[f"demo_{c}" for c in enc.categories_[0]]).cast(data_integer_dtype)
     demo_df = pl.concat([demo_df.select("PatientID"), demo_onehot], how="horizontal")
 else:
     # Handle case with no demographics data by creating a dummy dataframe with the correct schema
@@ -335,7 +424,7 @@ else:
         all_demo_categories = [""] # Ensure there is at least one category to fit the encoder
     enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
     enc.fit(pl.Series(all_demo_categories).to_numpy().reshape(-1, 1))
-    empty_demo_onehot = pl.DataFrame(enc.transform([[""]]).astype(data_integer_dtype), schema=[f"demo_{c}" for c in enc.categories_[0]])
+    empty_demo_onehot = pl.DataFrame(enc.transform([[""]]), schema=[f"demo_{c}" for c in enc.categories_[0]]).cast(data_integer_dtype)
     demo_df = pl.DataFrame({"PatientID": [], "demo_string": []}).with_columns(
         pl.col("PatientID").cast(pl.Utf8)
     )
