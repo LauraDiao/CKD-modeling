@@ -1,0 +1,31 @@
+HECK: 
+./../../../commonfilesharePHI/ldiao/ckd_project/ckd_tab_10_f32_i16_read
+Created output directory: ./../../../commonfilesharePHI/ldiao/ckd_project/ckd_tab_10_f32_i16_read
+Processing started. Output directory: ./../../../commonfilesharePHI/ldiao/ckd_project/ckd_tab_10_f32_i16_read
+Using DataNumeric data type: Float32
+Using DataInteger data type: Int16
+/opt/data/workingdir/ldiao/ckd_project/tab_gen_polars_read_tog.py:292: DeprecationWarning: the argument `columns` for `DataFrame.pivot` is deprecated. It was renamed to `on` in version 1.0.0.
+  lab_pivot = lab_df.pivot(
+/opt/data/workingdir/ldiao/ckd_project/tab_gen_polars_read_tog.py:323: MapWithoutReturnDtypeWarning: 'return_dtype' of function python_udf must be set
+
+A later expression might fail because the output type is not known. Set return_dtype=pl.self_dtype() if the type is unchanged, or set the proper output data type.
+  demo_df = demo_df.with_columns(
+/opt/data/workingdir/ldiao/ckd_project/tab_gen_polars_read_tog.py:323: MapWithoutReturnDtypeWarning: Calling `map_elements` without specifying `return_dtype` can lead to unpredictable results. Specify `return_dtype` to silence this warning.
+  demo_df = demo_df.with_columns(
+Traceback (most recent call last):
+  File "/opt/data/workingdir/ldiao/ckd_project/tab_gen_polars_read_tog.py", line 354, in <module>
+    base_df.write_csv(base_df_path)
+  File "/opt/data/workingdir/ldiao/conda/envs/conda-env1/lib/python3.11/site-packages/polars/dataframe/frame.py", line 3091, in write_csv
+    self.lazy().sink_csv(
+  File "/opt/data/workingdir/ldiao/conda/envs/conda-env1/lib/python3.11/site-packages/polars/lazyframe/frame.py", line 3310, in sink_csv
+    ldf.collect(engine=engine)
+  File "/opt/data/workingdir/ldiao/conda/envs/conda-env1/lib/python3.11/site-packages/polars/_utils/deprecation.py", line 97, in wrapper
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/data/workingdir/ldiao/conda/envs/conda-env1/lib/python3.11/site-packages/polars/lazyframe/opt_flags.py", line 330, in wrapper
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/data/workingdir/ldiao/conda/envs/conda-env1/lib/python3.11/site-packages/polars/lazyframe/frame.py", line 2335, in collect
+    return wrap_df(ldf.collect(engine, callback))
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+polars.exceptions.ComputeError: csv writer does not support object dtype
