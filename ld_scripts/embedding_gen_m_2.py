@@ -1,3 +1,7 @@
+# embedding generation script
+# modified function generate_and_save_embeddings to save the metadata csv for every 1000 "(pid, date)" 
+# saves the csv's inside metadata_chunks folder, including the range of pids in the csv name
+# for example:  'patient_embedding_metadata_0_999.csv'
 #!/usr/bin/env python
 import os
 import argparse

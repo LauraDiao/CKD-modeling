@@ -1,3 +1,5 @@
+# embedding generation script
+# modified
 #!/usr/bin/env python
 import os
 import argparse
