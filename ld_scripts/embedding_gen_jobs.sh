@@ -3,7 +3,7 @@
 # --- Configuration ---
 # Set this flag to 'true' to use the custom separator and full dataset.
 # Set to 'false' to use the default comma separator and subset data.
-CUSTOM_SEPARATOR_FLAG=true
+CUSTOM_SEPARATOR_FLAG=false
 
 # Base directory for all outputs
 OUTPUT_DIR_BASE="/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding"
