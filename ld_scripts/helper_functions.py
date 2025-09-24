@@ -91,6 +91,24 @@ if not use_gfr:
 # Functions: icd functions - pandas
 #-------------------------------------------------------------------------------
 
+icd_filter  = "(?i)^N18\..*"
+df['is_icd'] = df['DataCategory'].str.upper().str.contains(icd_filter, na=False)
+all_days = df[['PatientID', 'EventDate']].drop_duplicates().sort_values(['PatientID', 'EventDate'])
+# change
+all_days = all_days.dropna()
+# -----------------------------
+# Extract and forward-fill ICD
+# -----------------------------
+icd_df = df[df['is_icd'] & df['DataNumeric'].notna()]
+icd_daywise = (
+    icd_df.groupby(['PatientID', 'EventDate'])['DataNumeric']
+    .first().reset_index().rename(columns={'DataNumeric': 'ICD_combined'})
+)
+
+base_df = pd.merge(all_days, icd_daywise, on=['PatientID', 'EventDate'], how='left')
+base_df = base_df.sort_values(['PatientID', 'EventDate'])
+base_df["ICD_combined"] = base_df.groupby("PatientID")["ICD_combined"].ffill()
+
 def icd_to_stage(icd):
     """
         'N18.1%': 1,
@@ -113,10 +131,22 @@ def icd_to_stage(icd):
         return "4", 4
     return "5", 5
 
+# Enforce monotonic CKD staging
+new_stages = {}
+for pid, group in base_df.groupby("PatientID"):  # tqdm can be re-enabled here
+    group = group.sort_values("EventDate")
+    max_rank = 0
+    prev_idx = None
+    for idx, row in group.iterrows():
+        stage, rank = icd_to_stage(row["ICD_combined"])
+        if rank < max_rank:
+            stage = new_stages.get(prev_idx, stage)
+        else:
+            max_rank = rank
+        new_stages[idx] = stage
+        prev_idx = idx
 
-
-
-
+base_df["CKD_stage"] = base_df.index.map(new_stages)
 
 
 #-------------------------------------------------------------------------------
@@ -277,9 +307,9 @@ def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
     return patient_ids_to_keep
 
 def process_ckd_stage(df: pl.DataFrame, ckd_column: str, patient_id_col: str = 'PatientID', filtering_stage= filter_ckd_stage):
-    if ckd_column not in df.columns:
-        logger.error(f"'{ckd_column}' column not found in tabular data. Cannot proceed with label generation.")
-        return None
+    # if ckd_column not in df.columns:
+    #     logger.error(f"'{ckd_column}' column not found in tabular data. Cannot proceed with label generation.")
+    #     return None
 
     # Define the name of the new cleaned column
     clean_col_name = f'{ckd_column}_clean'
@@ -314,6 +344,58 @@ def process_ckd_stage(df: pl.DataFrame, ckd_column: str, patient_id_col: str = '
     
     return base_df
 
+
+def find_CKD_stage_progression_sequential(df: pl.DataFrame) -> pl.DataFrame:
+    """
+    Finds progression in Chronic Kidney Disease (CKD) stages for patients
+    using a more sequential, readable approach.
+
+    Args:
+        df: A Polars DataFrame with 'PatientID', 'EventDate_dt', and 'CKD_stage_clean' columns.
+
+    Returns:
+        A Polars DataFrame with a record of CKD stage progressions.
+    """
+    # 1. Sort the DataFrame by PatientID and then by event date
+    df_sorted = df.sort(by=['PatientID', 'EventDate'])
+
+    # 2. Add a new column for the previous CKD stage using a window function
+    df_with_prev_stage = df_sorted.with_columns(
+        pl.col('CKD_stage_clean').shift(1).over('PatientID').alias('previous_CKD_stage')
+    )
+
+    # 3. Add a new column for the difference between the current and previous stage
+    df_with_diff = df_with_prev_stage.with_columns(
+        (pl.col('CKD_stage_clean') - pl.col('previous_CKD_stage')).alias('stage_diff')
+    )
+
+    # 4. Filter for rows where the stage has progressed (difference > 0)
+    df_progressed = df_with_diff.filter(
+        pl.col('stage_diff') > 0
+    )
+
+    # 5. Select and rename the final columns
+    result = df_progressed.select(
+        pl.col('PatientID'),
+        pl.col('EventDate'),
+        pl.col('previous_CKD_stage'),
+        pl.col('CKD_stage_clean').alias('new_CKD_stage')
+    )
+
+    return result
+
+    
+def unique_patient_ckd_counts(df):
+    # Select only the necessary columns and drop duplicate rows based on PatientID
+    # to ensure each patient is counted only once for their CKD stage.
+    unique_patients_ckd = df[['PatientID', 'CKD_stage_clean']].unique()
+
+    # Count the occurrences of each CKD stage among these unique patients
+    ckd_stage_counts = unique_patients_ckd['CKD_stage_clean'].value_counts()
+
+    return ckd_stage_counts.sort('CKD_stage_clean')
+
+    
 
 #-------------------------------------------------------------------------------
 # Functions: ckd functions - pandas
@@ -394,13 +476,5 @@ def count_files(path):
 
 #-------------------------------------------------------------------------------
 # Functions: 
+# embedding generation
 #-------------------------------------------------------------------------------
-
-
-
-
-#-------------------------------------------------------------------------------
-# Functions: 
-#-------------------------------------------------------------------------------
-
-

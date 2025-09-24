@@ -1,5 +1,7 @@
 # embedding generation script
-# modified
+# modified function generate_and_save_embeddings to save the metadata csv for every 1000 "(pid, date)" 
+# saves the csv's inside metadata_chunks folder, including the range of pids in the csv name
+# for example:  'patient_embedding_metadata_0_999.csv'
 #!/usr/bin/env python
 import os
 import argparse
@@ -9,6 +11,7 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from datetime import datetime
+
 
 # change variables 
 icd_file = "/opt/data/commonfilesharePHI/ldiao/ckd_project/icd_mapping.csv"
@@ -23,7 +26,7 @@ if custom_separator:
     output_dir = "/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_full"
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
 
-output_dir += "v1" # <<
+output_dir += "_gfr_v2" # <<
 print(output_dir)
 
 try:
@@ -52,10 +55,8 @@ def parse_arguments():
 def load_data(csv_path, icd_path):
     print(f"[INFO] Loading patient events from: {csv_path}")
     # Set low_memory to False to suppress dtype warnings for mixed types.
-    if custom_separator: 
-        df = pd.read_csv(csv_path, sep='$', low_memory=False).drop_duplicates()
-    else: 
-        df = pd.read_csv(csv_path, low_memory=False).drop_duplicates()
+    # df = pd.read_csv(csv_path, low_memory=False)
+    df = pd.read_csv(csv_path, sep='$', low_memory=False).drop_duplicates()
     df = df.drop_duplicates()
     icd_df = pd.read_csv(icd_path)
 
@@ -150,7 +151,7 @@ def gfr_to_stage(gfr):
     else:
         return "5", 5
 
-def forward_fill_ckd_stage(summary_df):
+def forward_fill_ckd_stage_gfr(summary_df):
     """
     For each patient, forward-fill the GFR values (sorted by date), and map them to CKD stages
     based on the following thresholds:
@@ -214,6 +215,13 @@ def generate_and_save_embeddings(summary_df, tokenizer, model, device, embed_dim
     texts = summary_df['text'].tolist()
     ids = list(zip(summary_df['PatientID'], summary_df['EventDate']))
     gfrs = summary_df['GFR'].tolist()
+    
+    # Create a sub-directory for metadata files
+    metadata_dir = os.path.join(output_dir, "metadata_chunks")
+    os.makedirs(metadata_dir, exist_ok=True)
+
+    chunk_size = 1000
+    chunk_count = 0
 
     for i in tqdm(range(0, len(texts), batch_size), desc="Encoding notes in batches"):
         batch_texts = texts[i:i+batch_size]
@@ -231,8 +239,11 @@ def generate_and_save_embeddings(summary_df, tokenizer, model, device, embed_dim
             fname = f"{pid}_{date_str}.npz"
             fpath = os.path.join(patient_folder, fname)
             np.savez_compressed(fpath, cls_embedding=vec)
+            
             # Look up the CKD stage from the summary dataframe.
             stage_val = summary_df[(summary_df['PatientID'] == pid) & (summary_df['EventDate'] == date)]['CKD_stage'].values[0]
+            
+            # Append metadata to the list
             meta.append({
                 'PatientID': pid,
                 'EventDate': date,
@@ -241,12 +252,30 @@ def generate_and_save_embeddings(summary_df, tokenizer, model, device, embed_dim
                 'text': summary_df[(summary_df['PatientID'] == pid) & (summary_df['EventDate'] == date)]['text'].values[0],
                 'embedding_file': os.path.join(str(pid), fname)
             })
+            
+            # Check if it's time to save a metadata chunk
+            if len(meta) == chunk_size:
+                start_index = chunk_count * chunk_size
+                end_index = start_index + chunk_size -1
+                meta_df = pd.DataFrame(meta)
+                chunk_fname = f"patient_embedding_metadata_{start_index}_{end_index}.csv"
+                meta_csv_path = os.path.join(metadata_dir, chunk_fname)
+                meta_df.to_csv(meta_csv_path, index=False)
+                print(f"[INFO] Saved metadata chunk to: {meta_csv_path}")
+                meta = []  # Clear the list for the next chunk
+                chunk_count += 1
+    
+    # Save any remaining metadata
+    if meta:
+        start_index = chunk_count * chunk_size
+        end_index = start_index + len(meta) - 1
+        meta_df = pd.DataFrame(meta)
+        chunk_fname = f"patient_embedding_metadata_{start_index}_{end_index}.csv"
+        meta_csv_path = os.path.join(metadata_dir, chunk_fname)
+        meta_df.to_csv(meta_csv_path, index=False)
+        print(f"[INFO] Saved final metadata chunk to: {meta_csv_path}")
 
-    meta_df = pd.DataFrame(meta)
-    meta_csv_path = os.path.join(output_dir, output_fname)
-    print(meta_df.shape)
-    meta_df.to_csv(meta_csv_path, index=False)
-    print(f"[DONE] Metadata saved to: {meta_csv_path}")
+    print(f"[DONE] All embeddings and metadata chunks have been processed and saved.")
 
 def main():
     args = parse_arguments()
@@ -259,10 +288,10 @@ def main():
 
     summary_df = generate_synthetic_notes(df, demographic_map, icd_map)
     # Forward-fill GFR values and compute CKD stage per patient
-    summary_df = forward_fill_ckd_stage(summary_df)
+    summary_df = forward_fill_ckd_stage_gfr(summary_df)
     print(summary_df.head())
     # cuda 1, 0
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
     tokenizer, model = load_embedding_model(args.model_name, device)
     generate_and_save_embeddings(summary_df, tokenizer, model, device,
                                  args.embed_dim, args.batch_size, args.output_dir)
