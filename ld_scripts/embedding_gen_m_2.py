@@ -151,7 +151,7 @@ def gfr_to_stage(gfr):
     else:
         return "5", 5
 
-def forward_fill_ckd_stage(summary_df):
+def forward_fill_ckd_stage_gfr(summary_df):
     """
     For each patient, forward-fill the GFR values (sorted by date), and map them to CKD stages
     based on the following thresholds:
@@ -288,7 +288,7 @@ def main():
 
     summary_df = generate_synthetic_notes(df, demographic_map, icd_map)
     # Forward-fill GFR values and compute CKD stage per patient
-    summary_df = forward_fill_ckd_stage(summary_df)
+    summary_df = forward_fill_ckd_stage_gfr(summary_df)
     print(summary_df.head())
     # cuda 1, 0
     device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
