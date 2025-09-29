@@ -16,14 +16,21 @@ output_fname = 'patient_embedding_metadata.csv'
 
 custom_separator = False # <<
 if not custom_separator: 
-    subset_size = "10"  # 10, 100, all/full # <<
+    subset_size = "25"  # 10, 100, all/full # <<
     output_dir = f"/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_{subset_size}"
     event_file =  f"/opt/data/commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
 if custom_separator:
     output_dir = "/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_full"
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
 
+# icd script
 output_dir += "_icd" # <<
+
+# filter ckd stage
+filter_ckd_stage = True # <<
+if filter_ckd_stage: 
+    output_dir  += "_stage_filter" 
+
 print(output_dir)
 
 try:
@@ -186,9 +193,41 @@ def forward_fill_ckd_stage(summary_df):
     summary_df["CKD_stage"] = summary_df.index.map(new_stages)
     return summary_df
 
+# testing
+def clean_ckd_stage(value):
+    try:
+        return int(value)
+    except:
+        if isinstance(value, str) and value[0].isdigit():
+            return int(value[0])
+        else:
+            return np.nan
+            
+def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
+    initial_patients = df[patient_id_col].nunique()
+    # Filter for visits where CKD stage is 3 or higher
+    df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
+    # Get unique PatientIDs from this filtered DataFrame
+    patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
+    
+    patients_removed = initial_patients - len(patient_ids_to_keep)
 
+    return patient_ids_to_keep    
 
+def process_ckd_stage(df, filtering_stage= filter_ckd_stage):
+    # print(df)
+    df['CKD_stage_clean'] = df['CKD_stage'].apply(clean_ckd_stage)
+    df = df.sort_values(by=['PatientID', 'EventDate'])
+    df['CKD_stage_clean'] = df.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
+    df = df.dropna(subset=['CKD_stage_clean'])
+    df['CKD_stage_clean'] = df['CKD_stage_clean'].astype(int)
+    df['label'] = df['CKD_stage_clean'].apply(lambda x: 1 if x >= 4 else 0)
 
+    if filtering_stage:
+        df_patients = filter_patients_by_ckd_stage(df, 'CKD_stage_clean')
+        df = df[df["PatientID"].isin(df_patients)].copy()
+
+    return df
 
 def load_embedding_model(model_name, device):
     print(f"[INFO] Loading model from: {model_name}")
