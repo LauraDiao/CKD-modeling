@@ -63,7 +63,7 @@ def load_data(csv_path, icd_path):
     df['DataNumeric'] = df['DataNumeric'].fillna('None')
     df['EventTimeStamp'] = pd.to_datetime(df['EventTimeStamp'], errors='coerce')
     df['EventDate'] = df['EventTimeStamp'].dt.date
-    df['is_icd'] = df['DataCategory'].str.upper().str.contains('ICD|ICDEST', na=False)
+    df['is_icd'] = df['DataCategory'].str.upper().str.contains("(?i)^N18\..*", na=False)
 
     icd_df["icd_code"] = icd_df["icd_code"].astype(str).str.replace(".", "", regex=False)
     icd_map = dict(zip(icd_df["icd_code"], icd_df["long_title"]))
