@@ -404,7 +404,7 @@ def unique_patient_ckd_counts(df):
 def clean_ckd_stage(value):
     try:
         return int(value)
-    except ValueError:
+    except: # ValueError:
         if isinstance(value, str) and value[0].isdigit():
             return int(value[0])
         else:
@@ -420,6 +420,22 @@ def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
     patients_removed = initial_patients - len(patient_ids_to_keep)
 
     return patient_ids_to_keep        
+
+filter_ckd_stage = True
+def process_ckd_stage(df, filtering_stage= filter_ckd_stage):
+    # print(df)
+    df['CKD_stage_clean'] = df['CKD_stage'].apply(clean_ckd_stage)
+    df = df.sort_values(by=['PatientID', 'EventDate'])
+    df['CKD_stage_clean'] = df.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
+    df = df.dropna(subset=['CKD_stage_clean'])
+    df['CKD_stage_clean'] = df['CKD_stage_clean'].astype(int)
+    df['label'] = df['CKD_stage_clean'].apply(lambda x: 1 if x >= 4 else 0)
+
+    if filtering_stage:
+        df_patients = filter_patients_by_ckd_stage(df, 'CKD_stage_clean')
+        df = df[df["PatientID"].isin(df_patients)].copy()
+
+    return df
 
 def find_CKD_stage_progression(df):
     df_sorted = df.sort_values(by=['PatientID', 'EventDate_dt'])
@@ -474,7 +490,3 @@ def count_files(path):
         total_files += len(filenames)
     return total_files
 
-#-------------------------------------------------------------------------------
-# Functions: 
-# embedding generation
-#-------------------------------------------------------------------------------

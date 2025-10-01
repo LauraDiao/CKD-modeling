@@ -340,7 +340,7 @@ def truncate_icd(code):
     code = str(code).strip().replace(" ", "")
     if '.' in code:
         prefix, suffix = code.split('.', 1)
-        return f"{prefix}.{suffix[0]}" if suffix else prefix
+        return f"{prefix}.{suffix[0]}" if su   ffix else prefix
     return code
 
 diag_df = df.filter(pl.col("DataType") == "Diagnosis").with_columns(

@@ -10,15 +10,23 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from datetime import datetime
 
+# cuda
+cuda_num = 3
+print(f"cuda:{str(cuda_num)}")
+
+# batch size
+batch_size_ = 2048 # 1024
+
 # change variables 
 icd_file = "/opt/data/commonfilesharePHI/ldiao/ckd_project/icd_mapping.csv"
 output_fname = 'patient_embedding_metadata.csv'
 
-custom_separator = False # <<
+custom_separator = True # <<
 if not custom_separator: 
     subset_size = "25"  # 10, 100, all/full # <<
     output_dir = f"/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_{subset_size}"
-    event_file =  f"/opt/data/commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
+    # event_file =  f"/opt/data/commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
+    event_file =  f"/opt/data/workingdir/ldiao/ckd_project/patient_subsets/patients_subset_{subset_size}.csv"
 if custom_separator:
     output_dir = "/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_full"
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
@@ -52,7 +60,7 @@ def parse_arguments():
                         help="Pretrained transformer model to use for embeddings.")
     parser.add_argument("--embed_dim", type=int, default=768,
                         help="Dimension to which the model embedding should be truncated or padded.")
-    parser.add_argument("--batch_size", type=int, default=1024,
+    parser.add_argument("--batch_size", type=int, default=batch_size_,
                         help="Batch size for encoding the synthetic notes.")
     return parser.parse_args()
 
@@ -303,7 +311,7 @@ def main():
     summary_df = forward_fill_ckd_stage(summary_df)
     print(summary_df.head())
     # cuda 1, 0
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{cuda_num}" if torch.cuda.is_available() else "cpu")
     tokenizer, model = load_embedding_model(args.model_name, device)
     generate_and_save_embeddings(summary_df, tokenizer, model, device,
                                  args.embed_dim, args.batch_size, args.output_dir)
