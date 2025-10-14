@@ -1,3 +1,8 @@
+# # tab gen polars read tog modified fit_transform process (icd codes, etc)
+# polars script with datatype toggles
+# read_csv
+
+
 # polars script with datatype toggles
 # read_csv
 import polars as pl
@@ -5,16 +10,16 @@ from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
 import os
 import re
 import logging
-from tqdm import tqdm
- 
+from tqdm import tqdm # This is the library used for progress bars
+import numpy as np # Need to import numpy for clean_ckd_stage's use of np.nan
+
 # variables
 output_fname = "ckd_processed_tab.csv"
 custom_separator = True # <<
 if not custom_separator: 
     subset_size = "10"  # 10, 100, full # <<
     output_dir = f"/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_tab_{subset_size}"
-    # event_file =  f"/opt/data/commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
-    event_file =  f"/opt/data/workingdir/ldiao/ckd_project/patient_subsets/patients_subset_{subset_size}.csv"
+    event_file =  f"/opt/data/commonfilesharePHI/slee/ckd-optum/patients_subset_{subset_size}.csv"
 if custom_separator:
     output_dir = "/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_tab_full"
     event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
@@ -341,17 +346,48 @@ def truncate_icd(code):
     code = str(code).strip().replace(" ", "")
     if '.' in code:
         prefix, suffix = code.split('.', 1)
-        return f"{prefix}.{suffix[0]}" if su   ffix else prefix
+        return f"{prefix}.{suffix[0]}" if suffix else prefix
     return code
 
 diag_df = df.filter(pl.col("DataType") == "Diagnosis").with_columns(
     pl.col("DataCategory").map_elements(truncate_icd, return_dtype=pl.Utf8).alias("ICD_clean")
 ).group_by("PatientID", "EventDate").agg(pl.col("ICD_clean").unique().sort().alias("ICD_list"))
 
+
+# --- Memory Optimization: Separate Fit and Chunked Transform for ICD ---
 mlb_diag = MultiLabelBinarizer()
-diag_features = mlb_diag.fit_transform(diag_df["ICD_list"])
-diag_onehot = pl.DataFrame(diag_features, schema=[f"diag_{c}" for c in mlb_diag.classes_]).cast(data_integer_dtype)
-diag_df_onehot = pl.concat([diag_df.select("PatientID", "EventDate"), diag_onehot], how="horizontal")
+# 1. Fit: Use Polars to efficiently gather the complete, global vocabulary of ATOMIC labels
+all_icd_codes = diag_df["ICD_list"].explode().unique().drop_nulls().to_list()
+# Crucial: Wrap the list of codes in an outer list so MLB treats it as ONE sample with ALL possible labels
+mlb_diag.fit([all_icd_codes]) 
+logger.info(f"ICD MultiLabelBinarizer fitted with {len(mlb_diag.classes_)} unique classes.")
+
+# 2. Transform: Process in chunks
+chunk_size = 50000  # Define a manageable chunk size
+diag_onehot_chunks = []
+total_rows = diag_df.shape[0]
+
+# ADDED TQDM HERE for ICD chunking
+for start in tqdm(range(0, total_rows, chunk_size), desc="One-Hot Encoding ICD Codes"):
+    end = start + chunk_size
+    # Convert chunked ICD_list column to a Python list for sklearn
+    chunk_icd_list = diag_df.slice(start, end)["ICD_list"].to_list()
+
+    # Transform the chunk (no warnings because the full vocabulary is known)
+    chunk_features = mlb_diag.transform(chunk_icd_list)
+
+    # Convert to Polars DataFrame, cast to the integer type
+    chunk_onehot_pl = pl.DataFrame(
+        chunk_features, 
+        schema=[f"diag_{c}" for c in mlb_diag.classes_]
+    ).cast(data_integer_dtype)
+
+    diag_onehot_chunks.append(
+        pl.concat([diag_df.slice(start, end).select("PatientID", "EventDate"), chunk_onehot_pl], how="horizontal")
+    )
+
+diag_df_onehot = pl.concat(diag_onehot_chunks)
+# ---------------------------------------------------------------------
 
 base_df = base_df.join(diag_df_onehot, on=["PatientID", "EventDate"], how="left")
 
@@ -363,10 +399,40 @@ med_df = df.filter(pl.col("DataType") == "Medications").with_columns(
     pl.col("DataCategory").str.to_uppercase().str.replace(" ", "_").alias("med_clean")
 ).group_by("PatientID", "EventDate").agg(pl.col("med_clean").unique().sort().alias("med_list"))
 
+# --- Memory Optimization: Separate Fit and Chunked Transform for Meds ---
 mlb_med = MultiLabelBinarizer()
-med_features = mlb_med.fit_transform(med_df["med_list"])
-med_onehot = pl.DataFrame(med_features, schema=[f"med_{c}" for c in mlb_med.classes_]).cast(data_integer_dtype)
-med_df_onehot = pl.concat([med_df.select("PatientID", "EventDate"), med_onehot], how="horizontal")
+# 1. Fit: Use Polars to efficiently gather the complete, global vocabulary of ATOMIC labels
+all_med_codes = med_df["med_list"].explode().unique().drop_nulls().to_list()
+# Crucial: Wrap the list of codes in an outer list so MLB treats it as ONE sample with ALL possible labels
+mlb_med.fit([all_med_codes])
+logger.info(f"Medication MultiLabelBinarizer fitted with {len(mlb_med.classes_)} unique classes.")
+
+# 2. Transform: Process in chunks
+# chunk_size is already defined
+med_onehot_chunks = []
+total_rows_med = med_df.shape[0]
+
+# ADDED TQDM HERE for Medication chunking
+for start in tqdm(range(0, total_rows_med, chunk_size), desc="One-Hot Encoding Medications"):
+    end = start + chunk_size
+    # Convert chunked med_list column to a Python list for sklearn
+    chunk_med_list = med_df.slice(start, end)["med_list"].to_list()
+
+    # Transform the chunk (no warnings because the full vocabulary is known)
+    chunk_features = mlb_med.transform(chunk_med_list)
+
+    # Convert to Polars DataFrame, cast to the integer type
+    chunk_onehot_pl = pl.DataFrame(
+        chunk_features, 
+        schema=[f"med_{c}" for c in mlb_med.classes_]
+    ).cast(data_integer_dtype)
+    
+    med_onehot_chunks.append(
+        pl.concat([med_df.slice(start, end).select("PatientID", "EventDate"), chunk_onehot_pl], how="horizontal")
+    )
+
+med_df_onehot = pl.concat(med_onehot_chunks)
+# ---------------------------------------------------------------------
 
 base_df = base_df.join(med_df_onehot, on=["PatientID", "EventDate"], how="left")
 
@@ -451,7 +517,8 @@ final_file_path = os.path.join(output_dir, output_fname)
 
 # Read the processed CSV file
 try:
-    final_df = pl.read_csv(final_file_path)
+    final_df = pl.read_csv(final_file_path,
+    schema_overrides={"CKD_stage": pl.Utf8})
     print("File read successfully.")
     print(final_df.head())
 except Exception as e:
