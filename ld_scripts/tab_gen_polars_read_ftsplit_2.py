@@ -1,4 +1,8 @@
-# # tab gen polars read tog modified fit_transform process (icd codes, etc)
+#  tab_gen_polars_read_ftsplit.py
+# speed optimizations by converting the custom Python staging functions (map_elements) 
+# to vectorized Polars expressions (when/then/otherwise) and by 
+# using Polars' efficient iter_slices for chunking the one-hot encoding process.
+# modified fit_transform process (icd codes, etc)
 # polars script with datatype toggles
 # read_csv
 
@@ -7,13 +11,13 @@ from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
 import os
 import re
 import logging
-from tqdm import tqdm # This is the library used for progress bars
+from tqdm import tqdm
 import numpy as np # Need to import numpy for clean_ckd_stage's use of np.nan
 
 # variables
 output_fname = "ckd_processed_tab.csv"
 subset_size = "10"  # 10, 100, full # <<
-output_version_suffix = "_v5" # << for versioning output folders
+output_version_suffix = "_v6" # << for versioning output folders
 
 # --- TOGGLES ---
 custom_separator = True     # << If True, uses '$' separator and full path, else uses default separator and subset path.
@@ -51,6 +55,7 @@ if filter_ckd_stage:
     output_dir  += "_stage_filter" 
 
 output_dir  += output_version_suffix 
+
 try:
     os.makedirs(output_dir, exist_ok=True)
     print(f"Created output directory: {output_dir}")
@@ -135,41 +140,25 @@ if use_gfr:
         pl.col("GFR_combined").forward_fill().over("PatientID")
     )
 
-    def gfr_to_stage(gfr):
-        if gfr >= 90:
-            return "1"
-        elif gfr >= 60:
-            return "2"
-        elif gfr >= 45:
-            return "3a"
-        elif gfr >= 30:
-            return "3b"
-        elif gfr >= 15:
-            return "4"
-        elif gfr is None:
-            return None
-        else:
-            return "5"
-
-    def gfr_to_rank(gfr):
-        if gfr >= 90:
-            return 1
-        elif gfr >= 60:
-            return 2
-        elif gfr >= 45:
-            return 3.1
-        elif gfr >= 30:
-            return 3.2
-        elif gfr >= 15:
-            return 4
-        elif gfr is None:
-            return 0
-        else:
-            return 5
-
+    # Replaced Python functions with vectorized Polars expressions for speed
     base_df = base_df.with_columns(
-        pl.col("GFR_combined").map_elements(gfr_to_stage, return_dtype=pl.Utf8).alias("CKD_stage"),
-        pl.col("GFR_combined").map_elements(gfr_to_rank, return_dtype=data_numeric_dtype).alias("CKD_rank")
+        pl.when(pl.col("GFR_combined") >= 90).then(pl.lit("1"))
+        .when(pl.col("GFR_combined") >= 60).then(pl.lit("2"))
+        .when(pl.col("GFR_combined") >= 45).then(pl.lit("3a"))
+        .when(pl.col("GFR_combined") >= 30).then(pl.lit("3b"))
+        .when(pl.col("GFR_combined") >= 15).then(pl.lit("4"))
+        .when(pl.col("GFR_combined").is_null()).then(pl.lit(None).cast(pl.Utf8))
+        .otherwise(pl.lit("5")).alias("CKD_stage"),
+        
+        pl.when(pl.col("GFR_combined") >= 90).then(1)
+        .when(pl.col("GFR_combined") >= 60).then(2)
+        .when(pl.col("GFR_combined") >= 45).then(3.1)
+        .when(pl.col("GFR_combined") >= 30).then(3.2)
+        .when(pl.col("GFR_combined") >= 15).then(4)
+        .when(pl.col("GFR_combined").is_null()).then(0)
+        .otherwise(5).alias("CKD_rank")
+    ).with_columns(
+        pl.col("CKD_rank").cast(data_numeric_dtype)
     )
 
     # Enforce monotonic CKD staging using a cumulative maximum, a faster and more robust method
@@ -206,53 +195,23 @@ if not use_gfr:
     )
     # base_df.head()
 
-    def icd_to_stage(icd):
-        """
-            'N18.1%': 1,
-            'N18.2%': 2, 
-            'N18.3%': 3, 
-            'N18.4%': 4, 
-            'N18.5%': 5, 
-            'N18.6%': 'ESRD', 
-            'N18.9%': 'CKD'
-        """
-        if icd is None:
-            return None
-        if icd in 'N18.1%':
-            return "1"
-        if icd in 'N18.2%':
-            return "2"
-        if icd in 'N18.3%':
-            return "3"
-        if icd in 'N18.4%':
-            return "4"
-        return "5"
-
-    def icd_to_rank(icd):
-        """
-            'N18.1%': 1,
-            'N18.2%': 2, 
-            'N18.3%': 3, 
-            'N18.4%': 4, 
-            'N18.5%': 5, 
-            'N18.6%': 'ESRD', 
-            'N18.9%': 'CKD'
-        """
-        if icd is None:
-            return 0
-        if icd in 'N18.1%':
-            return 1
-        if icd in 'N18.2%':
-            return 2
-        if icd in 'N18.3%':
-            return 3
-        if icd in 'N18.4%':
-            return 4
-        return 5
-
+    # Replaced Python functions with vectorized Polars expressions for speed
     base_df = base_df.with_columns(
-        pl.col("ICD_combined").map_elements(icd_to_stage, return_dtype=pl.Utf8).alias("CKD_stage"),
-        pl.col("ICD_combined").map_elements(icd_to_rank, return_dtype=data_numeric_dtype).alias("CKD_rank")
+        pl.when(pl.col("ICD_combined").str.contains('N18.1')).then(pl.lit("1"))
+        .when(pl.col("ICD_combined").str.contains('N18.2')).then(pl.lit("2"))
+        .when(pl.col("ICD_combined").str.contains('N18.3')).then(pl.lit("3"))
+        .when(pl.col("ICD_combined").str.contains('N18.4')).then(pl.lit("4"))
+        .when(pl.col("ICD_combined").is_null()).then(pl.lit(None).cast(pl.Utf8))
+        .otherwise(pl.lit("5")).alias("CKD_stage"),
+
+        pl.when(pl.col("ICD_combined").str.contains('N18.1')).then(1)
+        .when(pl.col("ICD_combined").str.contains('N18.2')).then(2)
+        .when(pl.col("ICD_combined").str.contains('N18.3')).then(3)
+        .when(pl.col("ICD_combined").str.contains('N18.4')).then(4)
+        .when(pl.col("ICD_combined").is_null()).then(0)
+        .otherwise(5).alias("CKD_rank")
+    ).with_columns(
+        pl.col("CKD_rank").cast(data_numeric_dtype)
     )
 
     # Enforce monotonic CKD staging using a cumulative maximum, a faster and more robust method
@@ -271,20 +230,7 @@ if not use_gfr:
 # -----------------------------
 # clean and filter ckd stage
 # -----------------------------
-def clean_ckd_stage(value):
-    try:
-        # Handle cases like '3.1' or '3.2' if they are strings from CSV
-        val_float = float(value)
-        return int(val_float) # Truncate to integer stage
-    except ValueError:
-        if isinstance(value, str):
-            if value.lower() == '3a': return 3
-            if value.lower() == '3b': return 3 # Often grouped as stage 3
-            if value[0].isdigit():
-                return int(value[0])
-        return np.nan
-    except TypeError: # Handles if value is already NaN or None
-        return np.nan
+# Python function 'clean_ckd_stage' replaced with vectorized Polars expressions below
 
 def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
     initial_patients = df[patient_id_col].nunique()
@@ -304,21 +250,27 @@ def process_ckd_stage(df: pl.DataFrame, ckd_column: str, patient_id_col: str = '
         logger.error(f"'{ckd_column}' column not found in tabular data. Cannot proceed with label generation.")
         return None
 
-    # Define the name of the new cleaned column
     clean_col_name = f'{ckd_column}_clean'
 
-    # Apply the element-wise cleaning function.
-    # Note: map_elements can be less performant than vectorized operations,
-    # but it is the closest equivalent to pandas.apply for a custom Python function.
+    # Vectorized cleaning logic to replace the Python function:
     base_df = df.with_columns(
-        pl.col(ckd_column).map_elements(clean_ckd_stage, return_dtype=pl.Int64).alias(clean_col_name)
+        # 1. Try to parse as Int: if successful, keep the value (e.g., '1', '2')
+        pl.col(ckd_column).cast(pl.Int64, strict=False).alias(clean_col_name)
+    ).with_columns(
+        # 2. Handle '3a', '3b' which failed casting to Int64: set them to 3
+        pl.when(pl.col(clean_col_name).is_null() & pl.col(ckd_column).str.contains('3a|3b')).then(pl.lit(3).cast(pl.Int64))
+        # 3. For other non-numeric strings, try taking the first digit (e.g. from '1st')
+        .when(pl.col(clean_col_name).is_null() & pl.col(ckd_column).str.slice(0, 1).str.contains(r"^\d$")).then(pl.col(ckd_column).str.slice(0, 1).cast(pl.Int64))
+        # 4. Keep existing values
+        .otherwise(pl.col(clean_col_name))
+        .alias(clean_col_name)
     )
 
     # Use Polars' window functions to backfill and forward fill nulls within each patient group.
     base_df = base_df.with_columns(
-        pl.col(clean_col_name).fill_null(strategy='backward').over(patient_id_col).alias(clean_col_name)
+        pl.col(clean_col_name).forward_fill().over(patient_id_col).alias(clean_col_name) # FF first for more typical usage
     ).with_columns(
-        pl.col(clean_col_name).fill_null(strategy='forward').over(patient_id_col).alias(clean_col_name)
+        pl.col(clean_col_name).backward_fill().over(patient_id_col).alias(clean_col_name) # Then BF
     )
     
     # Remove patients with no stage info after the fill operations.
@@ -367,13 +319,11 @@ logger.info(f"ICD MultiLabelBinarizer fitted with {len(mlb_diag.classes_)} uniqu
 # 2. Transform: Process in chunks
 chunk_size = 50000  # Define a manageable chunk size
 diag_onehot_chunks = []
-total_rows = diag_df.shape[0]
 
-# ADDED TQDM HERE for ICD chunking
-for start in tqdm(range(0, total_rows, chunk_size), desc="One-Hot Encoding ICD Codes"):
-    end = start + chunk_size
+# MODIFIED: Use iter_slices for better chunk iteration with tqdm (Added Progress Bar)
+for chunk_df in tqdm(diag_df.iter_slices(chunk_size), total=(diag_df.shape[0] + chunk_size - 1) // chunk_size, desc="One-Hot Encoding ICD Codes"):
     # Convert chunked ICD_list column to a Python list for sklearn
-    chunk_icd_list = diag_df.slice(start, end)["ICD_list"].to_list()
+    chunk_icd_list = chunk_df["ICD_list"].to_list()
 
     # Transform the chunk (no warnings because the full vocabulary is known)
     chunk_features = mlb_diag.transform(chunk_icd_list)
@@ -385,7 +335,7 @@ for start in tqdm(range(0, total_rows, chunk_size), desc="One-Hot Encoding ICD C
     ).cast(data_integer_dtype)
 
     diag_onehot_chunks.append(
-        pl.concat([diag_df.slice(start, end).select("PatientID", "EventDate"), chunk_onehot_pl], how="horizontal")
+        pl.concat([chunk_df.select("PatientID", "EventDate"), chunk_onehot_pl], how="horizontal")
     )
 
 diag_df_onehot = pl.concat(diag_onehot_chunks)
@@ -412,13 +362,11 @@ logger.info(f"Medication MultiLabelBinarizer fitted with {len(mlb_med.classes_)}
 # 2. Transform: Process in chunks
 # chunk_size is already defined
 med_onehot_chunks = []
-total_rows_med = med_df.shape[0]
 
-# ADDED TQDM HERE for Medication chunking
-for start in tqdm(range(0, total_rows_med, chunk_size), desc="One-Hot Encoding Medications"):
-    end = start + chunk_size
+# MODIFIED: Use iter_slices for better chunk iteration with tqdm (Added Progress Bar)
+for chunk_df in tqdm(med_df.iter_slices(chunk_size), total=(med_df.shape[0] + chunk_size - 1) // chunk_size, desc="One-Hot Encoding Medications"):
     # Convert chunked med_list column to a Python list for sklearn
-    chunk_med_list = med_df.slice(start, end)["med_list"].to_list()
+    chunk_med_list = chunk_df["med_list"].to_list()
 
     # Transform the chunk (no warnings because the full vocabulary is known)
     chunk_features = mlb_med.transform(chunk_med_list)
@@ -430,7 +378,7 @@ for start in tqdm(range(0, total_rows_med, chunk_size), desc="One-Hot Encoding M
     ).cast(data_integer_dtype)
     
     med_onehot_chunks.append(
-        pl.concat([med_df.slice(start, end).select("PatientID", "EventDate"), chunk_onehot_pl], how="horizontal")
+        pl.concat([chunk_df.select("PatientID", "EventDate"), chunk_onehot_pl], how="horizontal")
     )
 
 med_df_onehot = pl.concat(med_onehot_chunks)
@@ -519,8 +467,10 @@ final_file_path = os.path.join(output_dir, output_fname)
 
 # Read the processed CSV file
 try:
-    final_df = pl.read_csv(final_file_path,
-    schema_overrides={"CKD_stage": pl.Utf8})
+    final_df = pl.read_csv(
+        final_file_path,
+        schema_overrides={"CKD_stage": pl.Utf8}
+    )
     print("File read successfully.")
     print(final_df.head())
 except Exception as e:
