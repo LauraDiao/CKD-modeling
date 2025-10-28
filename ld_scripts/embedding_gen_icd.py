@@ -10,6 +10,16 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from datetime import datetime
 
+# ==================================
+# Boolean Configuration
+# ==================================
+custom_separator = True # << Controls file reading format ($ or ,)
+filter_ckd_stage = True # << Controls filtering to patients who reached CKD stage >= 3
+# this script uses icd > gfr by default
+# ==================================
+
+output_version_suffix = "_v2" # << for versioning output folders
+
 # cuda
 cuda_num = 3
 print(f"cuda:{str(cuda_num)}")
@@ -21,7 +31,7 @@ batch_size_ = 2048 # 1024
 icd_file = "/opt/data/commonfilesharePHI/ldiao/ckd_project/icd_mapping.csv"
 output_fname = 'patient_embedding_metadata.csv'
 
-custom_separator = True # <<
+# custom_separator = True # << REMOVED: Moved to Boolean Configuration block
 if not custom_separator: 
     subset_size = "25"  # 10, 100, all/full # <<
     output_dir = f"/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_embedding_{subset_size}"
@@ -35,10 +45,11 @@ if custom_separator:
 output_dir += "_icd" # <<
 
 # filter ckd stage
-filter_ckd_stage = True # <<
+# filter_ckd_stage = True # << REMOVED: Moved to Boolean Configuration block
 if filter_ckd_stage: 
     output_dir  += "_stage_filter" 
 
+output_dir  += output_version_suffix 
 print(output_dir)
 
 try:

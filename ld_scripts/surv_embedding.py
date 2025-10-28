@@ -22,9 +22,13 @@ from datetime import timedelta # Import timedelta
 
 # change variables
 prediction_period = 365 # 365, 730, 1095
-# embedding_path = "./../../../commonfilesharePHI/ldiao/ckd_project/ckd_embeddings_m_full" # 10, 100, full
+
 embedding_size = "full" # 10, 100, full
-embedding_path =  "./../../../commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
+# embedding_path =  "/opt/commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
+# embedding_path = "/opt/commonfilesharePHI/ldiao/ckd_project/ckd_embeddings_m_full" # 10, 100, full
+embedding_path = "/opt/data/commonfilesharePHI/jnchiang/OptumCKD/ckd_embedding_full_icd_stage_filter"
+
+metadata_file = "meta_v2.csv" #sep='$'
 years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = False
@@ -53,7 +57,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
     parser.add_argument("--patience", type=int, default=5, help="Early stopping patience.")
     parser.add_argument("--scheduler-patience", type=int, default=2, help="Patience for scheduler LR reduction.")
-    parser.add_argument("--metadata-file", type=str, default="patient_embedding_metadata.csv", help="CSV with metadata.")
+    parser.add_argument("--metadata-file", type=str, default=metadata_file, help="CSV with metadata.")
     parser.add_argument("--random-seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--hidden-dim", type=int, default=128, help="Hidden dimension for models (RNN, LSTM, Transformer, MLP, TCN).")
     parser.add_argument("--num-layers", type=int, default=4, help="Number of layers for models.")
@@ -1159,20 +1163,20 @@ def main():
     metadata_path = os.path.join(args.embedding_root, args.metadata_file)
     if not os.path.exists(metadata_path):
         logger.error(f"Metadata file not found: {metadata_path}. Exiting."); return
-    metadata = pd.read_csv(metadata_path)
+    metadata = pd.read_csv(metadata_path, sep='$' ) # change
     logger.info(f"Initial metadata rows: {len(metadata)}")
 
-    metadata['CKD_stage_clean'] = metadata['CKD_stage'].apply(clean_ckd_stage)
-    metadata = metadata.sort_values(by=['PatientID', 'EventDate']) # Sort before fill
-    metadata['CKD_stage_clean'] = metadata.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
-    metadata = metadata.dropna(subset=['CKD_stage_clean']) # Drop rows where stage is still NaN
-    metadata['CKD_stage_clean'] = metadata['CKD_stage_clean'].astype(int)
+    # metadata['CKD_stage_clean'] = metadata['CKD_stage'].apply(clean_ckd_stage)
+    # metadata = metadata.sort_values(by=['PatientID', 'EventDate']) # Sort before fill
+    # metadata['CKD_stage_clean'] = metadata.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
+    # metadata = metadata.dropna(subset=['CKD_stage_clean']) # Drop rows where stage is still NaN
+    # metadata['CKD_stage_clean'] = metadata['CKD_stage_clean'].astype(int)
     
-    # change 
-    if filtering_stage: 
-        metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
-        metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
-        logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
+    # # change 
+    # if filtering_stage: 
+    #     metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
+    #     metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
+    #     logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
     
     # --- Start of Label Generation ---
     # Label 1: CKD stage 4 and above at the current visit
@@ -1199,10 +1203,15 @@ def main():
     # --- End of Label Generation ---
 
     logger.info("Filtering for existing embedding files...")
-    if 'embedding_file' not in metadata.columns:
-         logger.error("'embedding_file' column is missing from metadata.csv. Please ensure it is present.")
+    # change
+    if 'emb_id' not in metadata.columns:
+         logger.error("'emb_id' column is missing from metadata.csv. Please ensure it is present.")
          return
+    # change <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
     metadata = metadata[metadata.apply(lambda row: embedding_exists(row, args.embedding_root), axis=1)]
+    
+
     logger.info(f"Rows after checking embedding existence: {len(metadata)}")
     if metadata.empty: logger.error("No valid data after filtering for embeddings. Exiting."); return
 
@@ -1216,6 +1225,8 @@ def main():
     logger.info("Loading embeddings (this may take a while)...")
     metadata['embedding'] = metadata.apply(lambda r: load_embedding(os.path.join(args.embedding_root, r['embedding_file']), embedding_cache_dict), axis=1)
     logger.info("Embeddings loaded.")
+
+    # end of change
 
     unique_pids_processed = sorted(metadata['PatientID'].unique())
     if not unique_pids_processed: logger.error("No patients left after preprocessing. Exiting."); return
