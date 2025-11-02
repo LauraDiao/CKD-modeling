@@ -19,18 +19,17 @@ from sklearn.metrics import (
     confusion_matrix
 )
 from datetime import timedelta # Import timedelta
-
+# %%
 # change variables
 prediction_period = 365 # 365, 730, 1095
 
 full_embeddings = False # True
-# embedding_path =  "/opt/commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" # "full" # 10, 100, full
-# embedding_path = "/opt/commonfilesharePHI/ldiao/ckd_project/ckd_embeddings_m_full" # 10, 100, full
-embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
 
-metadata_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter/meta_v3.csv" #sep='$'
-# subset meta file
-metadata_file = "./patient_subsets_2/meta_v3_subset_10.csv"
+embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
+metadata_file = "meta_v3.csv" #sep='$' # meta_v3_all.csv, meta_v3.csv
+# subset
+embedding_path = "./embeddings_subset_10"
+metadata_file = "meta_v3_subset_10.csv"
 
 years = str(round(prediction_period/365))
 window_size = 365
@@ -38,7 +37,7 @@ filtering_stage = False
 mod_output_dir = ""
 if filtering_stage: 
     mod_output_dir = "_filter_stage_3" # ""
-
+# %%
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s %(levelname)s: %(message)s',
@@ -124,7 +123,7 @@ def pad_sequence(seq, length, dim):
 
     return np.stack(processed_seq, axis=0)
 
-def add_future_event_label_column(df, source_label_col, new_label_col, date_col='EventDate', patient_id_col='PatientID', horizon_days=prediction_period):
+def add_future_event_label_column(df, source_label_col, new_label_col, date_col='date', patient_id_col='PatientID', horizon_days=prediction_period):
     logger.info(f"Generating '{new_label_col}' based on '{source_label_col}' over a {horizon_days}-day future window.")
     df[new_label_col] = 0  # Initialize with 0
     df[date_col] = pd.to_datetime(df[date_col])
@@ -678,8 +677,8 @@ def bootstrap_metrics(labels, probs, threshold, n_boot=1000, random_state=42):
 
 def time_to_event_preprocessing(meta_df_input, log_transform_tte=False):
     meta = meta_df_input.copy()
-    meta["EventDate"] = pd.to_datetime(meta["EventDate"])
-    meta = meta.sort_values(by=["PatientID", "EventDate"]).reset_index(drop=True)
+    meta["date"] = pd.to_datetime(meta["date"])
+    meta = meta.sort_values(by=["PatientID", "date"]).reset_index(drop=True)
 
     meta["time_to_first_progression"] = np.nan 
     meta["event_for_cox"] = 0 
@@ -691,11 +690,11 @@ def time_to_event_preprocessing(meta_df_input, log_transform_tte=False):
         # 'label_ckd_stage_4_plus' here is the CKD stage-based label (1 if stage >=4)
         first_prog_rows = group[group["label_ckd_stage_4_plus"] == 1] # MODIFIED LINE
         if not first_prog_rows.empty:
-            first_prog_date = first_prog_rows["EventDate"].min()
-            first_prog_meta_idx = first_prog_rows["EventDate"].idxmin()
+            first_prog_date = first_prog_rows["date"].min()
+            first_prog_meta_idx = first_prog_rows["date"].idxmin()
 
             for current_visit_idx in group.index: 
-                current_date = meta.loc[current_visit_idx, "EventDate"]
+                current_date = meta.loc[current_visit_idx, "date"]
                 if current_date <= first_prog_date:
                     delta_days = (first_prog_date - current_date).days
                     meta.loc[current_visit_idx, "time_to_first_progression"] = float(delta_days)
@@ -708,9 +707,9 @@ def time_to_event_preprocessing(meta_df_input, log_transform_tte=False):
                     meta.loc[current_visit_idx, "event_for_cox"] = 0 
         else:
             if not group.empty:
-                last_observed_date_for_patient = group["EventDate"].max()
+                last_observed_date_for_patient = group["date"].max()
                 for current_visit_idx in group.index:
-                    current_date = meta.loc[current_visit_idx, "EventDate"]
+                    current_date = meta.loc[current_visit_idx, "date"]
                     delta_to_last_obs = (last_observed_date_for_patient - current_date).days
                     meta.loc[current_visit_idx, "time_to_first_progression"] = float(delta_to_last_obs)
                     meta.loc[current_visit_idx, "event_for_cox"] = 0 
@@ -725,7 +724,7 @@ def time_to_event_preprocessing(meta_df_input, log_transform_tte=False):
 def build_sequences_1year_future_label(metadata_df, window_size, prediction_horizon_days_param_unused, for_multitask=False):
     data_records = []
     
-    required_cols = ["PatientID", "EventDate", "embedding", "label_ckd_1_year_future"] # MODIFIED: Uses pre-calculated label
+    required_cols = ["PatientID", "date", "embedding", "label_ckd_1_year_future"] # MODIFIED: Uses pre-calculated label
     
     if for_multitask:
         required_cols.extend(["time_to_first_progression", "event_for_cox"])
@@ -734,10 +733,10 @@ def build_sequences_1year_future_label(metadata_df, window_size, prediction_hori
         missing = [col for col in required_cols if col not in metadata_df.columns]
         raise ValueError(f"Metadata missing required columns for sequence building: {missing}. Current columns: {metadata_df.columns.tolist()}")
 
-    metadata_df["EventDate"] = pd.to_datetime(metadata_df["EventDate"]) 
+    metadata_df["date"] = pd.to_datetime(metadata_df["date"]) 
 
     for pid, group in tqdm(metadata_df.groupby("PatientID"), desc=f"Building sequences with pre-calculated future label", leave=False, disable=True):
-        group = group.sort_values(by="EventDate").reset_index(drop=True) 
+        group = group.sort_values(by="date").reset_index(drop=True) 
         
         embeddings_list = list(group["embedding"])
         target_labels_for_prediction = list(group["label_ckd_1_year_future"]) # MODIFIED: Uses pre-calculated label
@@ -1152,6 +1151,7 @@ def analyze_switches_Nday_future(df_preds_Nday, N_days_horizon):
 
 
 def main():
+    # %%
     global args 
     args = parse_args()
     logger.info(f"Running with configuration for {args.prediction_horizon_days}-DAY FUTURE PREDICTION:")
@@ -1163,73 +1163,155 @@ def main():
         torch.cuda.manual_seed_all(args.random_seed)
 
     logger.info("Loading metadata...")
+    # %%
     metadata_path = os.path.join(args.embedding_root, args.metadata_file)
+
     if not os.path.exists(metadata_path):
         logger.error(f"Metadata file not found: {metadata_path}. Exiting."); return
-    metadata = pd.read_csv(metadata_path, sep='$' ) # change
+    
+    metadata = pd.read_csv(metadata_path , sep="$")
+
     logger.info(f"Initial metadata rows: {len(metadata)}")
 
-    # metadata['CKD_stage_clean'] = metadata['CKD_stage'].apply(clean_ckd_stage)
-    # metadata = metadata.sort_values(by=['PatientID', 'EventDate']) # Sort before fill
-    # metadata['CKD_stage_clean'] = metadata.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
-    # metadata = metadata.dropna(subset=['CKD_stage_clean']) # Drop rows where stage is still NaN
-    # metadata['CKD_stage_clean'] = metadata['CKD_stage_clean'].astype(int)
+    # %%
+    # metadata['CKD_stage_numeric'] = metadata['CKD_stage'].apply(clean_ckd_stage)
+    # metadata = metadata.sort_values(by=['PatientID', 'date']) # Sort before fill
+    # metadata['CKD_stage_numeric'] = metadata.groupby('PatientID')['CKD_stage_numeric'].bfill().ffill()
+    # metadata = metadata.dropna(subset=['CKD_stage_numeric']) # Drop rows where stage is still NaN
+    # metadata['CKD_stage_numeric'] = metadata['CKD_stage_numeric'].astype(int)
     
     # # change 
     # if filtering_stage: 
-    #     metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_clean')
+    #     metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_numeric')
     #     metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
     #     logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
-    
+    # %%
     # --- Start of Label Generation ---
     # Label 1: CKD stage 4 and above at the current visit
-    metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_clean'].apply(lambda x: 1 if x >= 4 else 0)
+    metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_numeric'].apply(lambda x: 1 if x >= 4 else 0)
     logger.info(f"Rows after CKD stage cleaning & 'label_ckd_stage_4_plus' creation: {len(metadata)}")
     logger.info(f"Value counts for 'label_ckd_stage_4_plus':\n{metadata['label_ckd_stage_4_plus'].value_counts(dropna=False).to_string()}")
 
     # Preprocess TTE data for Cox loss (depends on 'label_ckd_stage_4_plus')
     logger.info("Preprocessing TTE data for Cox loss component (time to first overall progression).")
     metadata = time_to_event_preprocessing(metadata, log_transform_tte=args.log_tte)
-
+    
+    # %%
     # Label 2: Event (CKD stage 4+) within 1 year (args.prediction_horizon_days)
     metadata = add_future_event_label_column(
         metadata,
         source_label_col='label_ckd_stage_4_plus',
         new_label_col='label_ckd_1_year_future',
-        date_col='EventDate', # Explicitly pass, though default
+        date_col='date', # Explicitly pass, though default
         patient_id_col='PatientID', # Explicitly pass, though default
         horizon_days=args.prediction_horizon_days
     )
     logger.info(f"Value counts for 'label_ckd_1_year_future':\n{metadata['label_ckd_1_year_future'].value_counts(dropna=False).to_string()}")
-    
+    # %%
     #logger.info(f"Metadata with generated labels (first 3 rows):\n{metadata.head(3).to_string()}")
     # --- End of Label Generation ---
 
     logger.info("Filtering for existing embedding files...")
-    # change
-    if 'emb_id' not in metadata.columns:
-         logger.error("'emb_id' column is missing from metadata.csv. Please ensure it is present.")
-         return
+
+    # %%
     # change <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+    def merge_embeddings_and_metadata2(base_dir: str, df_metadata: pd.DataFrame):
+        """
+        Loads embeddings from patientID.npy files and merges them with the metadata 
+        DataFrame, storing the full embedding vector in a single column named "embedding".
 
-    metadata = metadata[metadata.apply(lambda row: embedding_exists(row, args.embedding_root), axis=1)]
+        Args:
+            base_dir (str): The path to the folder containing patient subdirectories.
+            df_metadata (pd.DataFrame): The already loaded metadata DataFrame.
+
+        Returns:
+            pd.DataFrame: The metadata DataFrame with the new "embedding" column.
+        """
+        
+        # 1. Check required columns
+        required_cols = ['PatientID', 'enc_id', 'emb_id']
+        if not all(col in df_metadata.columns for col in required_cols):
+            logger.error(f"Metadata DataFrame must contain columns: {', '.join(required_cols)}")
+            return pd.DataFrame()
+
+        # Define the fixed embedding column name
+        EMBEDDING_COL = 'embedding'
+        
+        # Prepare a list to store the embedding data for efficient merging later
+        all_embedding_data = []
+
+        unique_patient_ids = df_metadata['PatientID'].unique()
+
+        # 2. Iterate through unique Patient IDs
+        for patient_id in unique_patient_ids:
+            patient_id_str = str(patient_id) 
+            
+            # Construct the path: base_dir/PatientID/PatientID.npy
+            patient_folder_path = os.path.join(base_dir, patient_id_str)
+            embeddings_path = os.path.join(patient_folder_path, f"{patient_id_str}.npy")
+
+            # Check if the file exists
+            if not os.path.isfile(embeddings_path):
+                logger.warning(f"Embeddings file not found at {embeddings_path}. Skipping PatientID: {patient_id_str}.")
+                continue
+                
+            # 3. Load the embeddings
+            try:
+                embeddings_array = np.load(embeddings_path)
+            except Exception as e:
+                logger.error(f"Error loading embeddings for PatientID {patient_id_str}: {e}")
+                continue
+            
+            # 4. Create a DataFrame for the embeddings with the vector as one column
+            df_embeddings = pd.DataFrame({
+                # The 'emb_id' column matches the row index of the NPY array
+                'emb_id': range(len(embeddings_array)),
+                # Store the full vector/array for the new single column "embedding"
+                EMBEDDING_COL: list(embeddings_array) # Convert array rows to a list for DataFrame storage
+            })
+            df_embeddings['PatientID'] = patient_id
+
+            # 5. Collect the embedding data
+            all_embedding_data.append(df_embeddings)
+
+        # 6. Concatenate all embedding data into a single DataFrame
+        if not all_embedding_data:
+            logger.warning("No embeddings were successfully loaded.")
+            return df_metadata # Return original metadata if no embeddings found
+            
+        df_all_embeddings = pd.concat(all_embedding_data, ignore_index=True)
+
+        # 7. Final Merge with Metadata 
+        # Merge the original metadata with the new, compiled embedding DataFrame
+        df_final = pd.merge(
+            df_metadata,
+            df_all_embeddings,
+            on=['PatientID', 'emb_id'],
+            how='left' # Use 'left' merge to keep all metadata rows
+        )
+        
+        logger.info(f"Final merge complete. Added '{EMBEDDING_COL}' column to metadata.")
+        return df_final
+
+    metadata = merge_embeddings_and_metadata2(embedding_path, metadata)
     
+    # metadata = metadata[metadata.apply(lambda row: embedding_exists(row, args.embedding_root), axis=1)]
+    
+    # logger.info(f"Rows after checking embedding existence: {len(metadata)}")
+    # if metadata.empty: logger.error("No valid data after filtering for embeddings. Exiting."); return
 
-    logger.info(f"Rows after checking embedding existence: {len(metadata)}")
-    if metadata.empty: logger.error("No valid data after filtering for embeddings. Exiting."); return
+    # unique_pids_initial = sorted(metadata['PatientID'].unique())
+    # if args.max_patients is not None and args.max_patients < len(unique_pids_initial):
+    #     subset_pids = unique_pids_initial[:args.max_patients]
+    #     metadata = metadata[metadata['PatientID'].isin(subset_pids)]
+    #     logger.info(f"Using only {args.max_patients} patients. Rows: {len(metadata)}")
 
-    unique_pids_initial = sorted(metadata['PatientID'].unique())
-    if args.max_patients is not None and args.max_patients < len(unique_pids_initial):
-        subset_pids = unique_pids_initial[:args.max_patients]
-        metadata = metadata[metadata['PatientID'].isin(subset_pids)]
-        logger.info(f"Using only {args.max_patients} patients. Rows: {len(metadata)}")
+    # embedding_cache_dict = {}
+    # logger.info("Loading embeddings (this may take a while)...")
+    # metadata['embedding'] = metadata.apply(lambda r: load_embedding(os.path.join(args.embedding_root, r['embedding_file']), embedding_cache_dict), axis=1)
+    # logger.info("Embeddings loaded.")
 
-    embedding_cache_dict = {}
-    logger.info("Loading embeddings (this may take a while)...")
-    metadata['embedding'] = metadata.apply(lambda r: load_embedding(os.path.join(args.embedding_root, r['embedding_file']), embedding_cache_dict), axis=1)
-    logger.info("Embeddings loaded.")
-
-    # end of change
+    # end of change <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     unique_pids_processed = sorted(metadata['PatientID'].unique())
     if not unique_pids_processed: logger.error("No patients left after preprocessing. Exiting."); return

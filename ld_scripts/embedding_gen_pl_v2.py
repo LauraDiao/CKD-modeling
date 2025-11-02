@@ -246,6 +246,8 @@ enc_grouped_df = enc_grouped_df.join(
     ckd_icd_df.select(["PatientID", "META_1", "CKD_stage_numeric", "max_stage"])
     , on=["PatientID", "META_1"], how='left'
 )
+
+# changes
 enc_grouped_df.write_csv(os.path.join(output_dir, "meta_v2.csv"))
 
 # %%
