@@ -23,12 +23,15 @@ from datetime import timedelta # Import timedelta
 # change variables
 prediction_period = 365 # 365, 730, 1095
 
-embedding_size = "full" # 10, 100, full
-# embedding_path =  "/opt/commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" + embedding_size
+full_embeddings = False # True
+# embedding_path =  "/opt/commonfilesharePHI/slee/ckd-optum/ckd_embeddings_" # "full" # 10, 100, full
 # embedding_path = "/opt/commonfilesharePHI/ldiao/ckd_project/ckd_embeddings_m_full" # 10, 100, full
-embedding_path = "/opt/data/commonfilesharePHI/jnchiang/OptumCKD/ckd_embedding_full_icd_stage_filter"
+embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
 
-metadata_file = "meta_v2.csv" #sep='$'
+metadata_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter/meta_v3.csv" #sep='$'
+# subset meta file
+metadata_file = "./patient_subsets_2/meta_v3_subset_10.csv"
+
 years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = False
