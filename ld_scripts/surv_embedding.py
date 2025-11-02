@@ -21,6 +21,9 @@ from sklearn.metrics import (
 from datetime import timedelta # Import timedelta
 # %%
 # change variables
+cuda_num = 2
+print(f"cuda:{str(cuda_num)}")
+batch_size_ = 2048 # 1024
 prediction_period = 365 # 365, 730, 1095
 
 full_embeddings = False # True
@@ -28,15 +31,18 @@ full_embeddings = False # True
 embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
 metadata_file = "meta_v3.csv" #sep='$' # meta_v3_all.csv, meta_v3.csv
 # subset
-embedding_path = "./embeddings_subset_10"
-metadata_file = "meta_v3_subset_10.csv"
+# embedding_path = "./embeddings_subset_10"
+# metadata_file = "meta_v3_subset_10.csv"
 
 years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = False
-mod_output_dir = ""
+output_dir = ""
 if filtering_stage: 
-    mod_output_dir = "_filter_stage_3" # ""
+    output_dir = "_filter_stage_3" # ""
+
+print(output_dir)
+
 # %%
 logging.basicConfig(
     level=logging.INFO,
@@ -55,7 +61,7 @@ def parse_args():
     parser.add_argument("--window-size", type=int, default=window_size, help="Sequence window size.")
     parser.add_argument("--embed-dim", type=int, default=768, help="Dimensionality of embeddings.")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs per model.")
-    parser.add_argument("--batch-size", type=int, default=64, help="Batch size.")
+    parser.add_argument("--batch-size", type=int, default=batch_size_, help="Batch size.")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate.")
     parser.add_argument("--patience", type=int, default=5, help="Early stopping patience.")
     parser.add_argument("--scheduler-patience", type=int, default=2, help="Patience for scheduler LR reduction.")
@@ -777,7 +783,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
     logger.info(f"Starting {model_name} training (DeepSurv: target 'label_ckd_1_year_future' + TTE to first progression).")
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.scheduler_patience, verbose=False)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=args.scheduler_patience)
     classification_criterion = nn.CrossEntropyLoss()
     cox_loss_w = args.cox_loss_weight
    
@@ -948,7 +954,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         logger.warning(f"{model_name}: Not enough valid data or no events to calculate C-index for TTE.")
         final_results_dict["concordance_index_tte"] = np.nan
 
-    output_dir_details = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + mod_output_dir
+    output_dir_details = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + output_dir
     os.makedirs(output_dir_details, exist_ok=True)
     df_details = pd.DataFrame({
         "PatientID": all_pids_test,  
@@ -972,7 +978,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5,
-                                                         patience=args.scheduler_patience, verbose=False)
+                                                         patience=args.scheduler_patience)
     classification_criterion = nn.CrossEntropyLoss()
 
     best_val_loss = float('inf')
@@ -1077,7 +1083,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     else:
         logger.warning(f"{model_name}: No targets in test set for evaluation.")
 
-    output_dir_dets = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + mod_output_dir
+    output_dir_dets = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + output_dir
     os.makedirs(output_dir_dets, exist_ok=True)
     df_dets = pd.DataFrame({
         "PatientID": all_pids_test,  
@@ -1356,7 +1362,7 @@ def main():
     test_loader_ds = DataLoader(test_ds_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
     logger.info(f"DeepSurv multitask datasets: Train={len(train_ds_ds)}, Val={len(val_ds_ds)}, Test={len(test_ds_ds)} sequences.")
 
-    device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{cuda_num}" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
     cl_models_defs = {
