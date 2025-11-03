@@ -21,25 +21,29 @@ from sklearn.metrics import (
 from datetime import timedelta # Import timedelta
 # %%
 # change variables
-cuda_num = 2
-print(f"cuda:{str(cuda_num)}")
 batch_size_ = 2048 # 1024
 prediction_period = 365 # 365, 730, 1095
-
-full_embeddings = False # True
-
-embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
-metadata_file = "meta_v3.csv" #sep='$' # meta_v3_all.csv, meta_v3.csv
-# subset
-# embedding_path = "./embeddings_subset_10"
-# metadata_file = "meta_v3_subset_10.csv"
-
 years = str(round(prediction_period/365))
 window_size = 365
-filtering_stage = False
-output_dir = ""
+filtering_stage = True
+output_dir = "_"
+full_embeddings = True # change <<<<<
+
+if full_embeddings: 
+    cuda_num = 2 # 
+    print(f"cuda:{str(cuda_num)}")
+    embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
+    metadata_file = "meta_v3.csv" #sep='$' # meta_v3_all.csv, meta_v3.csv
+    output_dir += "full"
+# subset
+if not full_embeddings: 
+    cuda_num = 0
+    print(f"cuda:{str(cuda_num)}")
+    embedding_path = "./embeddings_subset_10"
+    metadata_file = "meta_v3_subset_10.csv"
+    output_dir += "subset"
 if filtering_stage: 
-    output_dir = "_filter_stage_3" # ""
+    output_dir += "_stage_filter" # ""
 
 print(output_dir)
 
@@ -1448,7 +1452,11 @@ def main():
     
     if all_switch_dfs:
         combined_sw_df = pd.concat(all_switch_dfs, ignore_index=True)
-        sw_out_path = os.path.join(f"./{args.prediction_horizon_days}day_future_prediction_outputs", f"all_models_{args.prediction_horizon_days}day_future_switch_analysis_newlabels.csv")
+        # change
+        sw_out_dir = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + output_dir
+        os.makedirs(sw_out_dir, exist_ok=True)
+        sw_out_path = os.path.join(sw_out_dir, f"all_models_{args.prediction_horizon_days}day_future_switch_analysis_newlabels.csv")
+        # end of change
         combined_sw_df.to_csv(sw_out_path, index=False)
         logger.info(f"Combined {args.prediction_horizon_days}-day future switch analysis saved to: {sw_out_path}")
 
