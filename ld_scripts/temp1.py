@@ -27,15 +27,12 @@ import warnings
 
 # change variables
 prediction_period = 365 # 365, 730, 1095
-size = "100" # 10, 100, full 
-# tab_path = f"./tabular_full/processed_tab_eskd.csv"
-tab_path = f"./tabular_subset_{size}/processed_tab_eskd.csv"
 years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = True
 output_dir = ""
 if filtering_stage: 
-    output_dir = "_stage_filter" # ""
+    output_dir += "_stage_filter" # ""
 
 #%%
 # comment out
@@ -44,22 +41,23 @@ sys.argv=['']
 print("test")
 #%%
 
-# if full_embeddings: 
-#     print(f"cuda:{str(cuda_num)}")
-#     embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
-#     metadata_file = "meta_v3.csv" #sep='$' # meta_v3_all.csv, meta_v3.csv
-#     output_dir += "_full"
-# # subset
-# if not full_embeddings: 
-#     print(f"cuda:{str(cuda_num)}")
-#     embedding_path = f"./embeddings_subset_{subset}"
-#     metadata_file = f"meta_v3_subset_{subset}.csv"
-#     output_dir += f"_subset_{subset}"
-# if filtering_stage: 
-#     output_dir += "_stage_filter" # ""
+subset = False
+if subset: 
+    # print(f"cuda:{str(cuda_num)}")
+    size = "100" # 10, 100, full 
+    tab_path = f"./tabular_subset_{size}/processed_tab_eskd.csv"
+    output_dir += f"_subset_{size}"
+if not subset: 
+    # print(f"cuda:{str(cuda_num)}")
+    tab_path = f"./tabular_full/processed_tab_eskd.csv"    
+    output_dir += "_full"
 
-# output_dir += version
-# print(output_dir)
+if filtering_stage: 
+    output_dir += "_stage_filter" # ""
+
+version = '_eskd'
+output_dir += version
+print(output_dir)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -329,6 +327,59 @@ def time_to_event_preprocessing_tabular(meta_df_input, source_label_col='label_c
     return meta
 
 
+
+def build_sequences_1year_future_label(metadata_df, window_size, prediction_horizon_days, for_multitask=False):
+    data_records = [] 
+    required_cols = ["PatientID", "EventDate", "embedding", "label"]
+    if for_multitask:
+        required_cols.extend(["time_to_first_progression", "event_for_cox"])
+    if not all(col in metadata_df.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in metadata_df.columns]
+        raise ValueError(f"Metadata missing required columns: {missing}. Have: {metadata_df.columns}")
+
+    metadata_df["EventDate"] = pd.to_datetime(metadata_df["EventDate"])
+    prediction_timedelta = timedelta(days=prediction_horizon_days)
+
+    for pid, group in tqdm(metadata_df.groupby("PatientID"), desc=f"Building sequences", leave=False, disable=True):
+        group = group.sort_values(by="EventDate").reset_index(drop=True)
+        
+        embeddings_list = list(group["embedding"])
+        original_labels_list = list(group["label"]) 
+        event_dates_list = list(group["EventDate"])
+        
+        if for_multitask:
+            tte_cox_list = list(group["time_to_first_progression"])
+            event_cox_list = list(group["event_for_cox"])
+
+        for i in range(len(group)): 
+            start_idx_context = max(0, i - window_size + 1)
+            context_embeddings = embeddings_list[start_idx_context : i + 1]
+
+            if not context_embeddings: continue
+
+            current_visit_date = event_dates_list[i]
+            horizon_end_date = current_visit_date + prediction_timedelta
+            
+            future_event_occurs = 0
+            for j in range(i + 1, len(group)): 
+                future_visit_date = event_dates_list[j]
+                if future_visit_date <= horizon_end_date: 
+                    if original_labels_list[j] == 1: 
+                        future_event_occurs = 1
+                        break 
+                else: 
+                    break 
+            
+            record_tuple = (
+                context_embeddings,
+                future_event_occurs, 
+                pid,
+                i 
+            )
+            if for_multitask:
+                record_tuple += (tte_cox_list[i], event_cox_list[i])
+            data_records.append(record_tuple)
+    return data_records
 # Adapted build_sequences for the new 1-year future label
 def build_sequences(meta, window_size, target_label_col=f'label_ckd_{years}_year_future', feature_col='embedding'):
     sequence_data = []
@@ -362,6 +413,40 @@ def build_sequences(meta, window_size, target_label_col=f'label_ckd_{years}_year
             sequence_data.append((context, target, pid, k)) 
     return sequence_data
 
+# Adapted build_sequences_for_multitask
+def build_sequences_for_multitask(meta, window_size, 
+                                  classification_target_col='label_ckd_1_year_future',
+                                  tte_time_col='time_until_progression', # Was 'time_until_progression'
+                                  # Removed tte_event_col as it's taken from classification_target_col by current DeepSurv train loop
+                                  feature_col='embedding'):
+    data_records = []
+    required_cols = [classification_target_col, tte_time_col, feature_col]
+    for col in required_cols:
+        if col not in meta.columns:
+            raise ValueError(f"Required column '{col}' not found for build_sequences_for_multitask.")
+
+    for pid, group in meta.groupby("PatientID"):
+        group = group.sort_values(by="EventDate").reset_index(drop=True)
+        
+        feature_sequences = list(group[feature_col])
+        classification_labels = list(group[classification_target_col])
+        tte_values = list(group[tte_time_col])
+
+        for k in range(len(group)):
+            context_end_idx = k + 1
+            context_start_idx = max(0, k - window_size + 1)
+            context = feature_sequences[context_start_idx : context_end_idx]
+            
+            classification_target = classification_labels[k]
+            time_for_tte = tte_values[k] 
+            # The 'event' for Cox loss in the existing train_and_evaluate_deepsurv is `event_batch`,
+            # which will be `classification_target`.
+            
+            if not context: continue
+            # duplicate for event
+            data_records.append((context, classification_target, pid, k, time_for_tte, classification_target)) # 5 items
+    return data_records
+    
 def prepare_sklearn_data(sequence_records, window_size, embed_dim, for_survival=False):
     X_list, y_cls_list, pids_list, local_indices_list = [], [], [], []
     y_time_list, y_event_list = [], [] 
@@ -379,8 +464,6 @@ def prepare_sklearn_data(sequence_records, window_size, embed_dim, for_survival=
         local_indices_list.append(local_idx)
 
         if for_survival:
-            print("check")
-            print(record)
             # break
             tte_for_cox = record[4]
             event_for_cox = record[5]
@@ -404,7 +487,14 @@ def prepare_sklearn_data(sequence_records, window_size, embed_dim, for_survival=
 def train_and_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_val, X_test, y_test_cls, pids_test, local_indices_test, args):
     logger.info(f"Starting {model_name} training (Classification: {args.prediction_horizon_days}-day future label).")
     
-    model.fit(X_train, y_train)
+    # model.fit(X_train, y_train)
+    # early stopping for baseline
+    model.fit(
+        X_train, y_train,
+        eval_set=[(X_val, y_val)],
+        verbose=False
+    )
+
     logger.info(f"{model_name}: Trained for specified number of estimators/iterations.")
     
     model_path = f"{args.output_model_prefix}_{model_name}.joblib"
@@ -418,7 +508,9 @@ def train_and_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_
     if len(y_test_cls) > 0:
         prevalence = np.mean(y_test_cls)
         logger.info(f"{model_name} Test Prevalence ({args.prediction_horizon_days}-day future label): {prevalence:.4f}")
-        threshold = prevalence if 0 < prevalence < 1 else 0.5
+        # threshold = prevalence if 0 < prevalence < 1 else 0.5
+        # according to eskd model
+        threshold=0.001688
 
         metrics_raw = compute_metrics_at_threshold(y_test_cls, y_probs_test, threshold)
         metrics_ci = bootstrap_metrics(y_test_cls, y_probs_test, threshold, random_state=args.random_seed)
@@ -468,6 +560,7 @@ def train_and_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_ti
                                    args):
     logger.info(f"Starting {model_name} training (Survival TTE to first progression).")
     y_train_xgb_surv = np.where(y_train_event_s == 1, y_train_time_s, -y_train_time_s)
+    y_val_xgb_surv = np.where(y_val_event_s == 1, y_val_time_s, -y_val_time_s)
 
     # change
     # true_label 1
@@ -476,7 +569,13 @@ def train_and_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_ti
     surv_true_label = np.where(y_test_event_s == 1, y_test_time_s, -y_test_time_s)
     
     # fit 1
-    model.fit(X_train_s, y_train_xgb_surv)
+    # model.fit(X_train_s, y_train_xgb_surv)
+    
+    model.fit(
+        X_train_s, y_train_xgb_surv,
+        eval_set=[(X_val_s, y_val_xgb_surv)],
+        verbose=False
+    )
     # fit 2
     # model.fit(X_train_s, y_train_time_s, sample_weight = y_train_event_s)
     
@@ -598,6 +697,7 @@ def main():
                                              time_col_name='time_until_progression',
                                              event_indicator_col_name='event_for_cox_indicator') # This event_indicator is not directly used by current deepsurv loop
 
+    # print(metadata.head())
     # Label 2: CKD stage 4+ within 1 year (args.prediction_horizon_days)
     metadata = add_future_event_label_column(
         metadata,
@@ -620,11 +720,11 @@ def main():
          exclude_cols.append('ICD_combined')
 # %%
     potential_feature_cols = metadata.columns.difference(exclude_cols)
-    print(potential_feature_cols)
-    feature_cols = [col for col in potential_feature_cols if metadata[col].dtype in [np.number, 'bool']] # Keep only numeric/boolean
-    print(feature_cols)
-    print(metadata[potential_feature_cols].dtypes)
-    print(metadata[potential_feature_cols].head())
+    # print(potential_feature_cols)
+    # feature_cols = [col for col in potential_feature_cols if metadata[col].dtype in [np.number, 'bool']] # Keep only numeric/boolean
+    # print(feature_cols)
+    # print(metadata[potential_feature_cols].dtypes)
+    # print(metadata[potential_feature_cols].head())
     # for i in potential_feature_cols:
     #     print(i)
     #     print(metadata[i].unique())
@@ -634,9 +734,8 @@ def main():
     # Convert boolean columns to int (0 or 1)
     for col in feature_cols:
         if metadata[col].dtype == 'bool':
-            print("check")
             metadata[col] = metadata[col].astype(int)
-    print(feature_cols)
+    # print(feature_cols)
     # if not feature_cols:
     #     logger.error("No feature columns selected. Check data and exclude_cols list. Exiting.")
     #     return
@@ -655,6 +754,8 @@ def main():
     metadata['embedding'] = metadata['embedding'].apply(
         lambda x: [float(val) if pd.notna(val) else 0.0 for val in x]
     )
+
+    # print(metadata)
 
     if args.max_patients is not None:
         unique_pids_initial = sorted(metadata['PatientID'].unique())
@@ -678,12 +779,18 @@ def main():
     test_metadata = metadata[metadata['PatientID'].isin(test_patients)].copy()
     logger.info(f"Data split: Train PIDs={len(train_patients)} ({len(train_metadata)} recs), Val PIDs={len(val_patients)} ({len(val_metadata)} recs), Test PIDs={len(test_patients)} ({len(test_metadata)} recs)")
 
+    print(train_metadata.head())
     # Fill any remaining NaNs in TTE columns after splits (e.g., for patients with no progression)
     # TTE values (time_until_progression) that are NaN because a patient never progressed (or progressed after last obs)
     # might need specific handling (e.g. fill with a large number if CoxPH requires non-NaN, or ensure masking handles it)
     # For now, the dataloader's getitem handles NaN tte_val.
     # The `time_to_event_preprocessing_tabular` already handles this for censored patients by giving time to last obs.
     # Nan-filling for feature columns was done when creating 'embedding' list.
+
+    # tte processing
+
+    # logger.info("Preprocessing TTE data for survival modeling component.")
+    # metadata = time_to_event_preprocessing(metadata, log_transform_tte=args.log_tte)
 
     logger.info(f"Building sequences and preparing data for sklearn models...")
     train_sequences_class = build_sequences(train_metadata, args.window_size, target_label_col=f'label_ckd_{years}_year_future', feature_col='embedding')
@@ -693,14 +800,26 @@ def main():
     if not all([train_sequences_class, val_sequences_class, test_sequences_class]): 
         logger.error("One or more sequence sets are empty. Exiting."); return
 
-    print(train_sequences_class)
+    # print(train_sequences_class)
+    train_sequences_surv = build_sequences_for_multitask(train_metadata, args.window_size, 
+                                                          classification_target_col='label_ckd_1_year_future',
+                                                          tte_time_col='time_until_progression',
+                                                          feature_col='embedding')
+    val_sequences_surv = build_sequences_for_multitask(val_metadata, args.window_size,
+                                                        classification_target_col='label_ckd_1_year_future',
+                                                        tte_time_col='time_until_progression',
+                                                        feature_col='embedding')
+    test_sequences_surv = build_sequences_for_multitask(test_metadata, args.window_size,
+                                                         classification_target_col='label_ckd_1_year_future',
+                                                         tte_time_col='time_until_progression',
+                                                         feature_col='embedding')
 
     (X_train, y_train_cls, _, _, 
-     y_train_time, y_train_event, train_survival_mask) = prepare_sklearn_data(train_sequences_class, args.window_size, args.embed_dim, for_survival=True)
+     y_train_time, y_train_event, train_survival_mask) = prepare_sklearn_data(train_sequences_surv, args.window_size, args.embed_dim, for_survival=True)
     (X_val, y_val_cls, _, _, 
-     y_val_time, y_val_event, val_survival_mask) = prepare_sklearn_data(val_sequences_class, args.window_size, args.embed_dim, for_survival=True)
+     y_val_time, y_val_event, val_survival_mask) = prepare_sklearn_data(val_sequences_surv, args.window_size, args.embed_dim, for_survival=True)
     (X_test, y_test_cls, pids_test, local_indices_test, 
-     y_test_time, y_test_event, test_survival_mask) = prepare_sklearn_data(test_sequences_class, args.window_size, args.embed_dim, for_survival=True)
+     y_test_time, y_test_event, test_survival_mask) = prepare_sklearn_data(test_sequences_surv, args.window_size, args.embed_dim, for_survival=True)
 
     logger.info(f"Sklearn data shapes: X_train: {X_train.shape}, y_train_cls: {y_train_cls.shape}")
     logger.info(f"Train survival data: {np.sum(train_survival_mask)} valid samples.")
@@ -710,15 +829,29 @@ def main():
     all_results = []
     trained_classification_models = {} 
     # --- XGBoost Classifier ---
-    xgb_clf = xgb.XGBClassifier(
-        n_estimators=args.xgb_n_estimators,
-        max_depth=args.xgb_max_depth,
-        learning_rate=args.xgb_learning_rate,
-        use_label_encoder=False, 
-        eval_metric='logloss', 
-        random_state=args.random_seed
-    )
+    # xgb_clf = xgb.XGBClassifier(
+    #     n_estimators=args.xgb_n_estimators,
+    #     max_depth=args.xgb_max_depth,
+    #     learning_rate=args.xgb_learning_rate,
+    #     use_label_encoder=False, 
+    #     eval_metric='logloss', 
+    #     random_state=args.random_seed
+    # )
 
+    xgb_params = {
+    'objective': 'binary:logistic',
+    'eval_metric': ['logloss', 'aucpr'],
+    'learning_rate': 0.05,
+    'max_depth': 6,
+    'subsample': 0.8,
+    'colsample_bytree': 0.8,
+    'early_stopping_rounds':50,
+    'n_estimators': 1000,
+    'use_label_encoder': False,
+    # 'base_score':0.5,
+    }
+    xgb_clf = xgb.XGBClassifier(**xgb_params)
+    
     results_xgb_cls, trained_xgb_cls = train_and_evaluate_classifier(
         xgb_clf, f"XGBoost_{args.prediction_horizon_days}DayFuture_Classifier",
         X_train, y_train_cls, X_val, y_val_cls, X_test, y_test_cls, 
@@ -740,14 +873,29 @@ def main():
 
     # --- XGBoost Survival Model ---
     if X_train_s.shape[0] > 0 and X_test_s.shape[0] > 0: 
-        xgb_surv = xgb.XGBModel( 
-            n_estimators=args.xgb_n_estimators,
-            max_depth=args.xgb_max_depth,
-            learning_rate=args.xgb_learning_rate,
-            objective='survival:cox',
-            # eval_metric='cox-nloglik', # leave out 
-            random_state=args.random_seed,
-        )
+        # xgb_surv = xgb.XGBModel( 
+        #     n_estimators=args.xgb_n_estimators,
+        #     max_depth=args.xgb_max_depth,
+        #     learning_rate=args.xgb_learning_rate,
+        #     objective='survival:cox',
+        #     # eval_metric='cox-nloglik', # leave out 
+        #     random_state=args.random_seed,
+        # )
+
+        xgb_params = {
+            'objective': 'survival:cox',
+            'tree_method': 'hist',       # Highly recommended for speed/memory
+            'learning_rate': 0.05,
+            'max_depth': 6,
+            'n_estimators': 1000,
+            'eval_metric': 'cox-nloglik', # CRITICAL: Metric for survival
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'early_stopping_rounds': 50
+        }
+
+        # Use XGBRegressor for survival tasks
+        xgb_surv = xgb.XGBRegressor(**xgb_params)
 
         results_xgb_surv = train_and_evaluate_xgboost_survival(
             xgb_surv, f"XGBoost_TTE_Survival",
@@ -793,7 +941,7 @@ def main():
     
     if all_switch_dfs:
         combined_sw_df = pd.concat(all_switch_dfs, ignore_index=True)
-        sw_out_path = os.path.join(f"./{args.prediction_horizon_days}day_future_prediction_outputs", f"xgboost_only_{args.prediction_horizon_days}day_future_switch_analysis.csv") # Updated filename
+        sw_out_path = os.path.join(f"./{args.prediction_horizon_days}day_future_prediction_outputs" + output_dir, f"xgboost_only_{args.prediction_horizon_days}day_future_switch_analysis.csv") # Updated filename
         combined_sw_df.to_csv(sw_out_path, index=False)
         logger.info(f"Combined {args.prediction_horizon_days}-day future switch analysis saved to: {sw_out_path}")
 
