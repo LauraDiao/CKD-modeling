@@ -12,10 +12,10 @@ from tqdm import tqdm
 # %%
 # variables
 output_fname = "processed_tab_eskd.csv"
-subset = False # <<
+subset = True # <<
 
 if subset: 
-    subset_size = "100"  # 10, 100, full # <<
+    subset_size = "10000"  # 10, 100, full # <<
     output_dir = f"/opt/data/workingdir/ldiao/ckd_project/tabular_subset_{subset_size}"
     # output_dir = f"/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_tab_subset_{subset_size}"
     event_file =  f"/opt/data/workingdir/ldiao/ckd_project/tabular_subset_{subset_size}/unprocessed_tab_subset_{subset_size}.csv"
