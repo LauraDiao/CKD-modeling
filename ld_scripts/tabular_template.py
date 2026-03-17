@@ -1,3 +1,4 @@
+# %%
 #  tab_gen_polars_read_ftsplit.py
 # speed optimizations by converting the custom Python staging functions (map_elements) 
 # to vectorized Polars expressions (when/then/otherwise) and by 
@@ -6,6 +7,13 @@
 # polars script with datatype toggles
 # read_csv
 
+"""
+Plan:
+- one-hot encode tabular data by encounter
+- RNN: on progression
+
+"""
+
 import polars as pl
 from sklearn.preprocessing import MultiLabelBinarizer, OneHotEncoder
 import os
@@ -13,11 +21,11 @@ import re
 import logging
 from tqdm import tqdm
 import numpy as np # Need to import numpy for clean_ckd_stage's use of np.nan
-
+# %%
 # variables
 output_fname = "ckd_processed_tab.csv"
 subset_size = "10"  # 10, 100, full # <<
-output_version_suffix = "_v6" # << for versioning output folders
+output_version_suffix = "_v7" # << for versioning output folders
 
 # --- TOGGLES ---
 custom_separator = True     # << If True, uses '$' separator and full path, else uses default separator and subset path.
@@ -33,8 +41,81 @@ if not custom_separator:
     event_file = f"/opt/data/workingdir/ldiao/ckd_project/patient_subsets/patients_subset_{subset_size}.csv"
 if custom_separator:
     output_dir = "/opt/data/commonfilesharePHI/ldiao/ckd_project/ckd_tab_full"
-    event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
+    # event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt"
+    event_file = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/CKD-Pull_v2.rpt.parquet"
 
+# %%
+df = pl.read_parquet(event_file)
+
+# %%
+dx_df = (
+    df
+    .filter((pl.col("DataType") == "Diagnosis") 
+        & (pl.col("DataCategory").str.contains(r"^[A-Za-z]")))
+    .with_columns(
+        pl.col("DataCategory").str.head(5).alias("TruncatedICD")
+        , pl.lit(1).alias("Value")
+    )
+    .drop(["META_2", "EventTimeStamp"])
+    .unique()
+    .group_by(["PatientID", "META_1"])
+    .agg(pl.col("TruncatedICD").alias("icd_codes"))
+)
+# %% too large
+# pdx_df = dx_df.pivot(
+#     on='TruncatedICD'
+#     , index=['PatientID', 'META_1']
+#     , values='Value'
+#     , aggregate_function='max')
+# %%
+meds_df = (
+    df
+    .filter((pl.col("DataType") == "Medications"))
+    .drop(["EventTimeStamp"])
+    .unique()
+    .group_by(["PatientID", "META_1"])
+    .agg(pl.col("DataCategory").alias("med_list"))
+)
+# %%
+demographics_df = (
+    df
+    .filter(pl.col("DataType") == "Demographics")
+    .unique()
+)
+# %%
+encounters_df = (
+    df
+    .filter(pl.col("DataType") == "Encounter")
+    .unique()
+)
+
+# %%
+labs_df = (
+    df
+    .filter(
+        (pl.col("DataType") == "Labs")
+        & pl.col("DataNumeric").is_not_null()
+    )
+    .with_columns(
+        pl.col("DataCategory").fill_null("Sodium") # sodium is NA... 
+    )
+    .sort(["PatientID", "META_1", "DataCategory", "EventTimeStamp"])
+    .group_by(["PatientID", "META_1", "DataCategory"])
+    .agg(
+        pl.col("DataNumeric")
+        .cast(pl.Float64, strict=False)
+        .drop_nulls()
+        .last()
+        .alias("ResultValue")
+    )
+    .pivot(on='DataCategory', index=["PatientID", "META_1"], values="ResultValue", aggregate_function='mean')
+)
+# %%
+
+
+
+
+# %%
 # --- data types based on toggles ---
 data_numeric_dtype = pl.Float64 if use_float64 else pl.Float32
 data_integer_dtype = pl.Int64 if use_int64 else pl.Int16

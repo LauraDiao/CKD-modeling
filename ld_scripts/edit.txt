@@ -1,1 +1,25 @@
-TypeError: ReduceLROnPlateau.__init__() got an unexpected keyword argument 'verbose'
+13:30:30 INFO: TCN_365DayFutureTarget: Detailed test outputs saved to ./365day_future_prediction_outputs_50_subset_5_stage_filter_v1/TCN_365DayFutureTarget_detailed_outputs.csv
+13:30:30 INFO: --- Training DeepSurv Multi-Task Models (Target: 'label_ckd_1_year_future' + TTE Cox) ---
+13:30:30 INFO: Starting DeepSurv_RNN_365DayFutureTarget training (DeepSurv: target 'label_ckd_1_year_future' + TTE to first progression).
+Traceback (most recent call last):
+  File "/opt/data/workingdir/ldiao/ckd_project/surv_embedding_dt2.py", line 1381, in <module>
+    results = train_and_evaluate_deepsurv(model_instance, device, train_loader_ds, val_loader_ds, test_loader_ds, args, f"{name}_{model_name_suffix}")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/data/workingdir/ldiao/ckd_project/surv_embedding_dt2.py", line 803, in train_and_evaluate_deepsurv
+    x_batch, classification_target, pid_batch, _, tte_cox, event_cox = batch_data
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ValueError: too many values to unpack (expected 6)
+
+
+#----------------------------------------------------
+14:12:04 WARNING: Unexpected item type or shape in sequence for padding. Expected (768,), got <class 'float'> N/A. Using zeros.
+14:12:06 INFO: DeepSurv_MLP_365DayFutureTarget Ep 2/50 -> Tr L: 6.4769(C:0.7072 S:5.7697), Val L: 1.3536(C:0.6613 S:0.6923)
+14:12:07 WARNING: Unexpected item type or shape in sequence for padding. Expected (768,), got <class 'float'> N/A. Using zeros.
+14:12:10 INFO: DeepSurv_MLP_365DayFutureTarget Ep 3/50 -> Tr L: 6.3630(C:0.6598 S:5.7032), Val L: 1.3626(C:0.6707 S:0.6919)
+14:12:11 WARNING: Unexpected item type or shape in sequence for padding. Expected (768,), got <class 'float'> N/A. Using zeros.
+14:12:13 INFO: DeepSurv_MLP_365DayFutureTarget Ep 4/50 -> Tr L: 6.2151(C:0.6203 S:5.5949), Val L: 1.3728(C:0.6812 S:0.6915)
+14:12:14 WARNING: Unexpected item type or shape in sequence for padding. Expected (768,), got <class 'float'> N/A. Using zeros.
+14:12:16 INFO: DeepSurv_MLP_365DayFutureTarget Ep 5/50 -> Tr L: 6.0904(C:0.5766 S:5.5138), Val L: 1.3782(C:0.6870 S:0.6913)
+
+#-----------------------------------
+

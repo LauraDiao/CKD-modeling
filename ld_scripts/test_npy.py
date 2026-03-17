@@ -194,17 +194,34 @@ def merge_embeddings_and_metadata2(base_dir: str, df_metadata: pd.DataFrame):
     logger.info(f"Final merge complete. Added '{EMBEDDING_COL}' column to metadata.")
     return df_final
 # %%
-print(metadata_file)
-metadata = pd.read_csv(os.path.join(embedding_path, metadata_file))
+# print(metadata_file)
+# metadata = pd.read_csv(os.path.join(embedding_path, metadata_file))
+# merge = merge_embeddings_and_metadata2(embedding_path, metadata)
+# merge
 
-metadata = merge_embeddings_and_metadata2(embedding_path, metadata)
-metadata
-# %%
+# check merge
 # %%
 
-embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
-metadata_file = "meta_v3_all.csv" 
-metadata_full = pd.read_csv(os.path.join(embedding_path, metadata_file), sep='$')
-metadata_full.head()
+import polars as pl
+import pandas as pd
 # subset
+subset = 1000
+embedding_path = f"./embeddings_subset_{subset}"
+metadata_file = f"meta_v3_subset_{subset}.csv"
+metadata_path = os.path.join(embedding_path, metadata_file)
+
+metadata = pd.read_csv(metadata_path , sep="$")
+merge = merge_embeddings_and_metadata2(embedding_path, metadata)
+check = len(merge['PatientID'].unique())
+print(check)
+print(merge.head())
+# print unique patient count from merge
+
+
+# %%
+# all
+# embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
+# metadata_file = "meta_v3_all.csv" 
+# metadata_full = pd.read_csv(os.path.join(embedding_path, metadata_file), sep='$')
+# metadata_full.head()
 # %%

@@ -65,6 +65,7 @@ icd_df["icd_code"] = icd_df["icd_code"].astype(str).str.replace(".", "", regex=F
 icd_map = dict(zip(icd_df["icd_code"], icd_df["long_title"]))
 # %%
 df = pl.read_parquet(csv)
+print(len(df['PatientID'].unique()))
 # %%
 custom_map = {
     1: 1, # "1",
@@ -75,6 +76,9 @@ custom_map = {
     6: 6, # "ESRD",
     9: 0, # "CKD"
 }
+temp_df = df.filter(pl.col("DataCategory").str.contains("N18"))
+print(len(temp_df['PatientID'].unique()))
+
 print("Building Filter")
 ckd_icd_df = (
     df.filter(pl.col("DataCategory").str.contains("N18"))
@@ -112,7 +116,7 @@ df = (
     )
 
 )
-
+print(len(df['PatientID'].unique()))
 # %% demographics and encounter
 
 demographic_df = (

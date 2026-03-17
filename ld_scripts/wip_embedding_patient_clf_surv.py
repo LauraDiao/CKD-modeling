@@ -1,10 +1,15 @@
+# patient level test set survival/clf script
+# in the future, just sample directory from event level results instead
 #!/usr/bin/env python
+
+# added dt to prediction output
 
 import os
 import logging
 import argparse
 import numpy as np
 import pandas as pd
+import sys
 import torch
 import torch.nn as nn
 from tqdm import tqdm
@@ -20,31 +25,41 @@ from sklearn.metrics import (
 )
 from datetime import timedelta # Import timedelta
 # %%
-# change variables
-batch_size_ = 2048 # 1024
+# variables
+batch_size_ = 1024 # 2048 - too high # 1024
 prediction_period = 365 # 365, 730, 1095
 years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = True
-output_dir = "_"
-full_embeddings = True # change <<<<<
+output_dir = ""
+full_embeddings = False
+version = "_v2"
+cuda_num = 1 
+n_workers = 16 # 0, 12, 16, 20
+subset = 1000 # 1000, 4
+#%%
+# comment out
+# import sys
+# sys.argv=['']
+# print("test")
+#%%
 
 if full_embeddings: 
-    cuda_num = 2 # 
     print(f"cuda:{str(cuda_num)}")
     embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
     metadata_file = "meta_v3.csv" #sep='$' # meta_v3_all.csv, meta_v3.csv
-    output_dir += "full"
+    output_dir += "_full"
 # subset
 if not full_embeddings: 
-    cuda_num = 0
     print(f"cuda:{str(cuda_num)}")
-    embedding_path = "./embeddings_subset_10"
-    metadata_file = "meta_v3_subset_10.csv"
-    output_dir += "subset"
+    embedding_path = f"./embeddings_subset_{subset}"
+    metadata_file = f"meta_v3_subset_{subset}.csv"
+    output_dir += f"_subset_{subset}"
 if filtering_stage: 
     output_dir += "_stage_filter" # ""
 
+output_dir += "_patient_level"
+output_dir += version
 print(output_dir)
 
 # %%
@@ -53,7 +68,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler(f"./log_files/full_deepserv_tte_{years}year_future_50window.log", mode='w'),
+        logging.FileHandler(f"./log_files/full_deepserv_tte_{years}year_future_50_window{output_dir}.log", mode='w'),
         logging.StreamHandler()
     ]
 )
@@ -85,27 +100,6 @@ def parse_args():
     parser.add_argument("--cox-loss-weight", type=float, default=1.0, help="Weight for the Cox PH loss in DeepSurv models.")
     return parser.parse_args()
 
-def clean_ckd_stage(value):
-    try:
-        return int(value)
-    except ValueError:
-        if isinstance(value, str) and value[0].isdigit():
-            return int(value[0])
-        else:
-            return np.nan
-
-def filter_patients_by_ckd_stage(df, ckd_stage_col, patient_id_col='PatientID'):
-    initial_patients = df[patient_id_col].nunique()
-    # Filter for visits where CKD stage is 3 or higher
-    df_at_or_above_stage_3 = df[df[ckd_stage_col] >= 3]
-    # Get unique PatientIDs from this filtered DataFrame
-    patient_ids_to_keep = set(df_at_or_above_stage_3[patient_id_col].unique())
-    
-    patients_removed = initial_patients - len(patient_ids_to_keep)
-    logger.info(f"Identified {len(patient_ids_to_keep)} patients with at least one visit at or above CKD stage 3.")
-    logger.info(f"Filtered out approximately {patients_removed} patients who are always below CKD stage 3.")
-    
-    return patient_ids_to_keep
 
 def embedding_exists(row, root):
     return os.path.exists(os.path.join(root, row["embedding_file"]))
@@ -184,17 +178,20 @@ class CKDSequenceDataset(Dataset):
         classification_target_label = item[1] # This is 'label_ckd_1_year_future'
         pid = item[2]
         local_idx = item[3]
+        date = item[4] # added
 
         context_padded = pad_sequence(list(context), self.window_size, self.embed_dim)
 
         if self.is_multitask_data:
-            tte_for_cox = item[4]
-            event_for_cox = item[5] 
+            tte_for_cox = item[5] #
+            event_for_cox = item[6] #  
+
             return (
                 torch.tensor(context_padded, dtype=torch.float32),
                 torch.tensor(classification_target_label, dtype=torch.long),
                 pid, 
                 local_idx, 
+                date, # added
                 torch.tensor(tte_for_cox if pd.notna(tte_for_cox) else float('nan'), dtype=torch.float32), 
                 torch.tensor(event_for_cox, dtype=torch.float32) 
             )
@@ -203,7 +200,8 @@ class CKDSequenceDataset(Dataset):
                 torch.tensor(context_padded, dtype=torch.float32),
                 torch.tensor(classification_target_label, dtype=torch.long), 
                 pid, 
-                local_idx 
+                local_idx,
+                date # added
             )
 
 class LongitudinalRNN(nn.Module):
@@ -763,13 +761,18 @@ def build_sequences_1year_future_label(metadata_df, window_size, prediction_hori
                 continue
             
             classification_target_label = target_labels_for_prediction[i] # MODIFIED: Directly use pre-calculated label
+            date = group["date"].iloc[i].strftime('%Y-%m-%d')
+            # print(date)
+            # sys.exit(1)
             
+
             if for_multitask:
                 data_records.append((
                     context_embeddings,
                     classification_target_label, 
                     pid,
                     i, 
+                    date, # added
                     tte_cox_list[i],  
                     event_cox_list[i]  
                 ))
@@ -778,7 +781,8 @@ def build_sequences_1year_future_label(metadata_df, window_size, prediction_hori
                     context_embeddings,
                     classification_target_label, 
                     pid,
-                    i 
+                    i,
+                    date, # added
                 ))
     return data_records
 
@@ -805,7 +809,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         train_total_losses, train_class_losses, train_surv_losses = [], [], []
         for batch_idx, batch_data in enumerate(train_loader):
             optimizer.zero_grad()
-            x_batch, classification_target, pid_batch, _, tte_cox, event_cox = batch_data
+            x_batch, classification_target, pid_batch, _, _, tte_cox, event_cox = batch_data
 
             x_batch = x_batch.to(device)
             classification_target = classification_target.to(device)  
@@ -842,7 +846,8 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         val_total_losses, val_class_losses, val_surv_losses = [], [], []
         with torch.no_grad():
             for batch_data_val in val_loader:
-                x_val, class_target_val, _, _, tte_cox_val, event_cox_val = batch_data_val
+                x_val, class_target_val, _, _, _, tte_cox_val, event_cox_val = batch_data_val
+                # x_val, class_target_val, _, _, tte_cox_val, event_cox_val = batch_data_val
                 x_val, class_target_val = x_val.to(device), class_target_val.to(device)
                 tte_cox_val, event_cox_val = tte_cox_val.to(device), event_cox_val.to(device)
 
@@ -899,10 +904,12 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
     all_cl_targets_test, all_cl_probs_test, all_cl_logits_test = [], [], []
     all_risk_scores_test, all_tte_cox_test, all_event_cox_test = [], [], []
     all_pids_test = []  
+    all_dates_test = [] # added
 
     with torch.no_grad():
         for batch_test in test_loader:
-            x_test, cl_target_t, pid_batch_t, _, tte_cox_t, event_cox_t = batch_test
+            # 
+            x_test, cl_target_t, pid_batch_t, _, date_batch_t, tte_cox_t, event_cox_t = batch_test
             x_test = x_test.to(device)
 
             cl_logits_t, risk_t = model(x_test)
@@ -914,7 +921,8 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
             all_risk_scores_test.extend(risk_t.cpu().numpy())
             all_tte_cox_test.extend(tte_cox_t.cpu().numpy())
             all_event_cox_test.extend(event_cox_t.cpu().numpy())
-            all_pids_test.extend(pid_batch_t)  
+            all_pids_test.extend(pid_batch_t) 
+            all_dates_test.extend(date_batch_t) # added
 
     all_cl_targets_test = np.array(all_cl_targets_test)
     all_cl_probs_test = np.array(all_cl_probs_test)
@@ -962,6 +970,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
     os.makedirs(output_dir_details, exist_ok=True)
     df_details = pd.DataFrame({
         "PatientID": all_pids_test,  
+        "EncounterDate": all_dates_test,
         "cl_logit_0": all_cl_logits_test[:, 0] if len(all_cl_logits_test.shape) == 2 else ([np.nan] * len(all_cl_targets_test) if len(all_cl_logits_test) > 0 else []),
         "cl_logit_1": all_cl_logits_test[:, 1] if len(all_cl_logits_test.shape) == 2 else ([np.nan] * len(all_cl_targets_test) if len(all_cl_logits_test) > 0 else []),
         "cl_prob_1": all_cl_probs_test,
@@ -998,7 +1007,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         train_losses = []
         for batch_idx, batch_data in enumerate(train_loader):
             optimizer.zero_grad()
-            x_batch, y_batch, _, _ = batch_data  # y_batch is 'label_ckd_1_year_future'
+            x_batch, y_batch, _, _, _ = batch_data  # y_batch is 'label_ckd_1_year_future'
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
             logits = model(x_batch)
@@ -1018,7 +1027,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         val_losses = []
         with torch.no_grad():
             for batch_val in val_loader:
-                x_val, y_val, _, _ = batch_val
+                x_val, y_val, _, _, _ = batch_val
                 x_val, y_val = x_val.to(device), y_val.to(device)
                 logits_val = model(x_val)
                 loss_val = classification_criterion(logits_val, y_val.long())
@@ -1054,9 +1063,11 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     model.eval()
     all_targets_test, all_probs_test, all_logits_test = [], [], []
     all_pids_test = []  
+    all_local_idx_test = []
+    all_dates_test = []
     with torch.no_grad():
         for batch_t in test_loader:
-            x_t, y_t, pid_batch_t, _ = batch_t
+            x_t, y_t, pid_batch_t, local_idx_t, date_batch_t = batch_t #added
             x_t = x_t.to(device)
             logits_t = model(x_t)
             probs_t = nn.Softmax(dim=1)(logits_t)[:, 1]
@@ -1064,6 +1075,8 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
             all_probs_test.extend(probs_t.cpu().numpy())
             all_logits_test.extend(logits_t.cpu().numpy())
             all_pids_test.extend(pid_batch_t)  
+            all_local_idx_test.extend(local_idx_t.cpu().numpy()) # check
+            all_dates_test.extend(date_batch_t) # added
 
     all_targets_test = np.array(all_targets_test)
     all_probs_test = np.array(all_probs_test)
@@ -1091,6 +1104,8 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     os.makedirs(output_dir_dets, exist_ok=True)
     df_dets = pd.DataFrame({
         "PatientID": all_pids_test,  
+        "LocalIndex": all_local_idx_test, # added
+        "EncounterDate": all_dates_test, # added
         "cl_logit_0": all_logits_test[:, 0] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
         "cl_logit_1": all_logits_test[:, 1] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
         "cl_prob_1": all_probs_test, # "prob_positive"
@@ -1109,9 +1124,9 @@ def predict_label_switches(model, loader, device, is_deepsurv_model=False):
     with torch.no_grad():
         for batch_data in loader:
             if is_deepsurv_model:
-                x_batch, y_batch, pid_batch, idx_batch, _, _ = batch_data 
+                x_batch, y_batch, pid_batch, idx_batch, _, _, _ = batch_data  # added
             else:
-                x_batch, y_batch, pid_batch, idx_batch = batch_data 
+                x_batch, y_batch, pid_batch, idx_batch, _ = batch_data 
             
             x_batch = x_batch.to(device)
             if is_deepsurv_model:
@@ -1159,308 +1174,344 @@ def analyze_switches_Nday_future(df_preds_Nday, N_days_horizon):
     analysis_df[f"SwitchDifference_{N_days_horizon}DayFuture"] = analysis_df[pred_col_name] - analysis_df[true_col_name]
     return analysis_df
 
+def merge_embeddings_and_metadata2(base_dir: str, df_metadata: pd.DataFrame):
+    """
+    Loads embeddings from patientID.npy files and merges them with the metadata 
+    DataFrame, storing the full embedding vector in a single column named "embedding".
 
-def main():
-    # %%
-    global args 
-    args = parse_args()
-    logger.info(f"Running with configuration for {args.prediction_horizon_days}-DAY FUTURE PREDICTION:")
-    for key, val in vars(args).items(): logger.info(f"{key}: {val}")
+    Args:
+        base_dir (str): The path to the folder containing patient subdirectories.
+        df_metadata (pd.DataFrame): The already loaded metadata DataFrame.
 
-    np.random.seed(args.random_seed)
-    torch.manual_seed(args.random_seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.random_seed)
-
-    logger.info("Loading metadata...")
-    # %%
-    metadata_path = os.path.join(args.embedding_root, args.metadata_file)
-
-    if not os.path.exists(metadata_path):
-        logger.error(f"Metadata file not found: {metadata_path}. Exiting."); return
+    Returns:
+        pd.DataFrame: The metadata DataFrame with the new "embedding" column.
+    """
     
-    metadata = pd.read_csv(metadata_path , sep="$")
+    # 1. Check required columns
+    required_cols = ['PatientID', 'enc_id', 'emb_id']
+    if not all(col in df_metadata.columns for col in required_cols):
+        logger.error(f"Metadata DataFrame must contain columns: {', '.join(required_cols)}")
+        return pd.DataFrame()
 
-    logger.info(f"Initial metadata rows: {len(metadata)}")
-
-    # %%
-    # metadata['CKD_stage_numeric'] = metadata['CKD_stage'].apply(clean_ckd_stage)
-    # metadata = metadata.sort_values(by=['PatientID', 'date']) # Sort before fill
-    # metadata['CKD_stage_numeric'] = metadata.groupby('PatientID')['CKD_stage_numeric'].bfill().ffill()
-    # metadata = metadata.dropna(subset=['CKD_stage_numeric']) # Drop rows where stage is still NaN
-    # metadata['CKD_stage_numeric'] = metadata['CKD_stage_numeric'].astype(int)
+    # Define the fixed embedding column name
+    EMBEDDING_COL = 'embedding'
     
-    # # change 
-    # if filtering_stage: 
-    #     metadata_patients = filter_patients_by_ckd_stage(metadata, 'CKD_stage_numeric')
-    #     metadata = metadata[metadata["PatientID"].isin(metadata_patients)].copy()
-    #     logger.info(f"Shape of metadata after filtering for patients at or above stage 3: {metadata.shape}")
-    # %%
-    # --- Start of Label Generation ---
-    # Label 1: CKD stage 4 and above at the current visit
-    metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_numeric'].apply(lambda x: 1 if x >= 4 else 0)
-    logger.info(f"Rows after CKD stage cleaning & 'label_ckd_stage_4_plus' creation: {len(metadata)}")
-    logger.info(f"Value counts for 'label_ckd_stage_4_plus':\n{metadata['label_ckd_stage_4_plus'].value_counts(dropna=False).to_string()}")
+    # Prepare a list to store the embedding data for efficient merging later
+    all_embedding_data = []
 
-    # Preprocess TTE data for Cox loss (depends on 'label_ckd_stage_4_plus')
-    logger.info("Preprocessing TTE data for Cox loss component (time to first overall progression).")
-    metadata = time_to_event_preprocessing(metadata, log_transform_tte=args.log_tte)
-    
-    # %%
-    # Label 2: Event (CKD stage 4+) within 1 year (args.prediction_horizon_days)
-    metadata = add_future_event_label_column(
-        metadata,
-        source_label_col='label_ckd_stage_4_plus',
-        new_label_col='label_ckd_1_year_future',
-        date_col='date', # Explicitly pass, though default
-        patient_id_col='PatientID', # Explicitly pass, though default
-        horizon_days=args.prediction_horizon_days
+    unique_patient_ids = df_metadata['PatientID'].unique()
+
+    # 2. Iterate through unique Patient IDs
+    for patient_id in unique_patient_ids:
+        patient_id_str = str(patient_id) 
+        
+        # Construct the path: base_dir/PatientID/PatientID.npy
+        patient_folder_path = os.path.join(base_dir, patient_id_str)
+        embeddings_path = os.path.join(patient_folder_path, f"{patient_id_str}.npy")
+
+        # Check if the file exists
+        if not os.path.isfile(embeddings_path):
+            logger.warning(f"Embeddings file not found at {embeddings_path}. Skipping PatientID: {patient_id_str}.")
+            continue
+            
+        # 3. Load the embeddings
+        try:
+            embeddings_array = np.load(embeddings_path)
+        except Exception as e:
+            logger.error(f"Error loading embeddings for PatientID {patient_id_str}: {e}")
+            continue
+        
+        # 4. Create a DataFrame for the embeddings with the vector as one column
+        df_embeddings = pd.DataFrame({
+            # The 'emb_id' column matches the row index of the NPY array
+            'emb_id': range(len(embeddings_array)),
+            # Store the full vector/array for the new single column "embedding"
+            EMBEDDING_COL: list(embeddings_array) # Convert array rows to a list for DataFrame storage
+        })
+        df_embeddings['PatientID'] = patient_id
+
+        # 5. Collect the embedding data
+        all_embedding_data.append(df_embeddings)
+
+    # 6. Concatenate all embedding data into a single DataFrame
+    if not all_embedding_data:
+        logger.warning("No embeddings were successfully loaded.")
+        return df_metadata # Return original metadata if no embeddings found
+        
+    df_all_embeddings = pd.concat(all_embedding_data, ignore_index=True)
+
+    # 7. Final Merge with Metadata 
+    # Merge the original metadata with the new, compiled embedding DataFrame
+    df_final = pd.merge(
+        df_metadata,
+        df_all_embeddings,
+        on=['PatientID', 'emb_id'],
+        how='left' # Use 'left' merge to keep all metadata rows
     )
-    logger.info(f"Value counts for 'label_ckd_1_year_future':\n{metadata['label_ckd_1_year_future'].value_counts(dropna=False).to_string()}")
-    # %%
-    #logger.info(f"Metadata with generated labels (first 3 rows):\n{metadata.head(3).to_string()}")
-    # --- End of Label Generation ---
+    
+    logger.info(f"Final merge complete. Added '{EMBEDDING_COL}' column to metadata.")
+    return df_final
 
-    logger.info("Filtering for existing embedding files...")
 
-    # %%
-    # change <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
-    def merge_embeddings_and_metadata2(base_dir: str, df_metadata: pd.DataFrame):
+# global args 
+# execution
+#%%
+print("test")
+
+
+args = parse_args()
+logger.info(f"Running with configuration for {args.prediction_horizon_days}-DAY FUTURE PREDICTION:")
+for key, val in vars(args).items(): logger.info(f"{key}: {val}")
+
+np.random.seed(args.random_seed)
+torch.manual_seed(args.random_seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(args.random_seed)
+
+logger.info("Loading metadata...")
+# %%
+metadata_path = os.path.join(args.embedding_root, args.metadata_file)
+
+if not os.path.exists(metadata_path):
+    logger.error(f"Metadata file not found: {metadata_path}. Exiting.")
+    sys.exit(1)
+
+metadata = pd.read_csv(metadata_path , sep="$")
+
+def patientcount(df):
+    print(len(df['PatientID'].unique()))
+    return
+
+metadata.head()
+patientcount(metadata)
+#%%
+logger.info(f"Initial metadata rows: {len(metadata)}")
+
+metadata['CKD_stage_numeric'] = metadata.groupby('PatientID')['CKD_stage_numeric'].bfill().ffill()
+patientcount(metadata)
+#%%
+# --- Start of Label Generation ---
+# Label 1: CKD stage 4 and above at the current visit
+metadata['label_ckd_stage_4_plus'] = metadata['CKD_stage_numeric'].apply(lambda x: 1 if x >= 4 else 0)
+logger.info(f"Rows after CKD stage cleaning & 'label_ckd_stage_4_plus' creation: {len(metadata)}")
+logger.info(f"Value counts for 'label_ckd_stage_4_plus':\n{metadata['label_ckd_stage_4_plus'].value_counts(dropna=False).to_string()}")
+patientcount(metadata)
+#%%
+# Preprocess TTE data for Cox loss (depends on 'label_ckd_stage_4_plus')
+logger.info("Preprocessing TTE data for Cox loss component (time to first overall progression).")
+metadata = time_to_event_preprocessing(metadata, log_transform_tte=args.log_tte)
+patientcount(metadata)
+# %%
+# Label 2: Event (CKD stage 4+) within 1 year (args.prediction_horizon_days)
+metadata = add_future_event_label_column(
+    metadata,
+    source_label_col='label_ckd_stage_4_plus',
+    new_label_col='label_ckd_1_year_future',
+    date_col='date', # Explicitly pass, though default
+    patient_id_col='PatientID', # Explicitly pass, though default
+    horizon_days=args.prediction_horizon_days
+)
+patientcount(metadata)
+#%%
+logger.info(f"Value counts for 'label_ckd_1_year_future':\n{metadata['label_ckd_1_year_future'].value_counts(dropna=False).to_string()}")
+
+logger.info("Filtering for existing embedding files...")
+
+metadata = merge_embeddings_and_metadata2(embedding_path, metadata)
+patientcount(metadata)
+#%%
+unique_pids_processed = sorted(metadata['PatientID'].unique())
+if not unique_pids_processed: 
+    logger.error("No patients left after preprocessing. Exiting.")
+    sys.exit(1)
+patientcount(metadata)
+#%%
+train_pids, temp_pids = train_test_split(unique_pids_processed, test_size=0.3, random_state=args.random_seed) 
+val_pids, test_pids = train_test_split(temp_pids, test_size=0.5, random_state=args.random_seed) 
+print(len(train_pids))
+print(len(temp_pids))
+print(len(val_pids))
+print(len(test_pids))
+#%%
+train_meta = metadata[metadata['PatientID'].isin(train_pids)].copy()
+print(patientcount(train_meta))
+val_meta = metadata[metadata['PatientID'].isin(val_pids)].copy()
+print(patientcount(val_meta))
+test_meta = metadata[metadata['PatientID'].isin(test_pids)].copy()
+
+# change to patient level here. 
+print(test_meta)
+print(patientcount(test_meta))
+# %%
+def select_encounters(df):
+    """
+        selects a single encounter row for each patient
+
+        -For patients who progress in CKD stage (CKD_stage_numeric increases),
+        selects the last encounter before the patient progresses in ckd stage
+        -For patients whose CKD stage never changes, selects a random encounter.
         """
-        Loads embeddings from patientID.npy files and merges them with the metadata 
-        DataFrame, storing the full embedding vector in a single column named "embedding".
+    df = df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(by=['PatientID', 'date']).reset_index(drop=True)
+    df['next_stage'] = df.groupby('PatientID')['CKD_stage_numeric'].shift(-1)
+    # find changes in ckd stage
+    df['last_encounter'] = df['next_stage'] > df['CKD_stage_numeric']
 
-        Args:
-            base_dir (str): The path to the folder containing patient subdirectories.
-            df_metadata (pd.DataFrame): The already loaded metadata DataFrame.
+    selected_indices = []
 
-        Returns:
-            pd.DataFrame: The metadata DataFrame with the new "embedding" column.
-        """
-        
-        # 1. Check required columns
-        required_cols = ['PatientID', 'enc_id', 'emb_id']
-        if not all(col in df_metadata.columns for col in required_cols):
-            logger.error(f"Metadata DataFrame must contain columns: {', '.join(required_cols)}")
-            return pd.DataFrame()
+    for patient, group in df.groupby('PatientID'):
+        progressions = group[group['last_encounter']]
 
-        # Define the fixed embedding column name
-        EMBEDDING_COL = 'embedding'
-        
-        # Prepare a list to store the embedding data for efficient merging later
-        all_embedding_data = []
+        if not progressions.empty:
+            # patient progresses
+            last_pre_progression_index = progressions.index.max()
+            selected_indices.append(last_pre_progression_index)
+        else:
+            # patient does not progress
+            random_index = np.random.choice(group.index)
+            selected_indices.append(random_index)
 
-        unique_patient_ids = df_metadata['PatientID'].unique()
+    result_df = df.loc[selected_indices].drop(columns=['next_stage', 'last_encounter']).reset_index(drop=True)
+    return result_df
 
-        # 2. Iterate through unique Patient IDs
-        for patient_id in unique_patient_ids:
-            patient_id_str = str(patient_id) 
-            
-            # Construct the path: base_dir/PatientID/PatientID.npy
-            patient_folder_path = os.path.join(base_dir, patient_id_str)
-            embeddings_path = os.path.join(patient_folder_path, f"{patient_id_str}.npy")
+test_meta = select_encounters(test_meta)
+print(test_meta)
+print(patientcount(test_meta))
+# 
 
-            # Check if the file exists
-            if not os.path.isfile(embeddings_path):
-                logger.warning(f"Embeddings file not found at {embeddings_path}. Skipping PatientID: {patient_id_str}.")
-                continue
-                
-            # 3. Load the embeddings
-            try:
-                embeddings_array = np.load(embeddings_path)
-            except Exception as e:
-                logger.error(f"Error loading embeddings for PatientID {patient_id_str}: {e}")
-                continue
-            
-            # 4. Create a DataFrame for the embeddings with the vector as one column
-            df_embeddings = pd.DataFrame({
-                # The 'emb_id' column matches the row index of the NPY array
-                'emb_id': range(len(embeddings_array)),
-                # Store the full vector/array for the new single column "embedding"
-                EMBEDDING_COL: list(embeddings_array) # Convert array rows to a list for DataFrame storage
-            })
-            df_embeddings['PatientID'] = patient_id
-
-            # 5. Collect the embedding data
-            all_embedding_data.append(df_embeddings)
-
-        # 6. Concatenate all embedding data into a single DataFrame
-        if not all_embedding_data:
-            logger.warning("No embeddings were successfully loaded.")
-            return df_metadata # Return original metadata if no embeddings found
-            
-        df_all_embeddings = pd.concat(all_embedding_data, ignore_index=True)
-
-        # 7. Final Merge with Metadata 
-        # Merge the original metadata with the new, compiled embedding DataFrame
-        df_final = pd.merge(
-            df_metadata,
-            df_all_embeddings,
-            on=['PatientID', 'emb_id'],
-            how='left' # Use 'left' merge to keep all metadata rows
-        )
-        
-        logger.info(f"Final merge complete. Added '{EMBEDDING_COL}' column to metadata.")
-        return df_final
-
-    metadata = merge_embeddings_and_metadata2(embedding_path, metadata)
+logger.info(f"Data split: Train PIDs={len(train_pids)} ({len(train_meta)} recs), Val PIDs={len(val_pids)} ({len(val_meta)} recs), Test PIDs={len(test_pids)} ({len(test_meta)} recs)")
+#%%
+logger.info(f"Building sequences using 'label_ckd_1_year_future' as target (derived from {args.prediction_horizon_days}-day horizon)...")
+train_seq_cl = build_sequences_1year_future_label(train_meta, args.window_size, args.prediction_horizon_days, for_multitask=False)
+val_seq_cl = build_sequences_1year_future_label(val_meta, args.window_size, args.prediction_horizon_days, for_multitask=False)
+test_seq_cl = build_sequences_1year_future_label(test_meta, args.window_size, args.prediction_horizon_days, for_multitask=False)
+#%%
+patientcount(metadata)
+#%%
+if not all([train_seq_cl, val_seq_cl, test_seq_cl]):    
+    logger.error("One or more classification sequence sets are empty. Check data/logic. Exiting.")
+    sys.exit(1)
     
-    # metadata = metadata[metadata.apply(lambda row: embedding_exists(row, args.embedding_root), axis=1)]
-    
-    # logger.info(f"Rows after checking embedding existence: {len(metadata)}")
-    # if metadata.empty: logger.error("No valid data after filtering for embeddings. Exiting."); return
+train_ds_cl = CKDSequenceDataset(train_seq_cl, args.window_size, args.embed_dim, is_multitask_data=False)
+val_ds_cl = CKDSequenceDataset(val_seq_cl, args.window_size, args.embed_dim, is_multitask_data=False)
+test_ds_cl = CKDSequenceDataset(test_seq_cl, args.window_size, args.embed_dim, is_multitask_data=False)
+train_loader_cl = DataLoader(train_ds_cl, batch_size=args.batch_size, shuffle=True, num_workers=n_workers, pin_memory=True if torch.cuda.is_available() else False)
+val_loader_cl = DataLoader(val_ds_cl, batch_size=args.batch_size, shuffle=False, num_workers=n_workers, pin_memory=True if torch.cuda.is_available() else False)
+test_loader_cl = DataLoader(test_ds_cl, batch_size=args.batch_size, shuffle=False, num_workers=n_workers, pin_memory=True if torch.cuda.is_available() else False)
+logger.info(f"Classification datasets: Train={len(train_ds_cl)}, Val={len(val_ds_cl)}, Test={len(test_ds_cl)} sequences.")
 
-    # unique_pids_initial = sorted(metadata['PatientID'].unique())
-    # if args.max_patients is not None and args.max_patients < len(unique_pids_initial):
-    #     subset_pids = unique_pids_initial[:args.max_patients]
-    #     metadata = metadata[metadata['PatientID'].isin(subset_pids)]
-    #     logger.info(f"Using only {args.max_patients} patients. Rows: {len(metadata)}")
+logger.info(f"Building sequences for DeepSurv multitask using 'label_ckd_1_year_future' (derived from {args.prediction_horizon_days}-day horizon) + TTE Cox...")
+train_seq_ds = build_sequences_1year_future_label(train_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
+val_seq_ds = build_sequences_1year_future_label(val_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
+test_seq_ds = build_sequences_1year_future_label(test_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
 
-    # embedding_cache_dict = {}
-    # logger.info("Loading embeddings (this may take a while)...")
-    # metadata['embedding'] = metadata.apply(lambda r: load_embedding(os.path.join(args.embedding_root, r['embedding_file']), embedding_cache_dict), axis=1)
-    # logger.info("Embeddings loaded.")
+if not all([train_seq_ds, val_seq_ds, test_seq_ds]):
+    logger.error("One or more DeepSurv sequence sets are empty. Check data/logic. Exiting.")
+    sys.exit(1)
 
-    # end of change <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+train_ds_ds = CKDSequenceDataset(train_seq_ds, args.window_size, args.embed_dim, is_multitask_data=True)
+val_ds_ds = CKDSequenceDataset(val_seq_ds, args.window_size, args.embed_dim, is_multitask_data=True)
+test_ds_ds = CKDSequenceDataset(test_seq_ds, args.window_size, args.embed_dim, is_multitask_data=True)
+train_loader_ds = DataLoader(train_ds_ds, batch_size=args.batch_size, shuffle=True, num_workers=n_workers, pin_memory=True if torch.cuda.is_available() else False)
+val_loader_ds = DataLoader(val_ds_ds, batch_size=args.batch_size, shuffle=False, num_workers=n_workers, pin_memory=True if torch.cuda.is_available() else False)
+test_loader_ds = DataLoader(test_ds_ds, batch_size=args.batch_size, shuffle=False, num_workers=n_workers, pin_memory=True if torch.cuda.is_available() else False)
+logger.info(f"DeepSurv multitask datasets: Train={len(train_ds_ds)}, Val={len(val_ds_ds)}, Test={len(test_ds_ds)} sequences.")
 
-    unique_pids_processed = sorted(metadata['PatientID'].unique())
-    if not unique_pids_processed: logger.error("No patients left after preprocessing. Exiting."); return
-    
-    train_pids, temp_pids = train_test_split(unique_pids_processed, test_size=0.3, random_state=args.random_seed) 
-    val_pids, test_pids = train_test_split(temp_pids, test_size=0.5, random_state=args.random_seed) 
+device = torch.device(f"cuda:{cuda_num}" if torch.cuda.is_available() else "cpu")
+logger.info(f"Using device: {device}")
 
-    train_meta = metadata[metadata['PatientID'].isin(train_pids)].copy()
-    val_meta = metadata[metadata['PatientID'].isin(val_pids)].copy()
-    test_meta = metadata[metadata['PatientID'].isin(test_pids)].copy()
-    logger.info(f"Data split: Train PIDs={len(train_pids)} ({len(train_meta)} recs), Val PIDs={len(val_pids)} ({len(val_meta)} recs), Test PIDs={len(test_pids)} ({len(test_meta)} recs)")
+cl_models_defs = {
+    "RNN": lambda: LongitudinalRNN(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
+    "LSTM": lambda: LongitudinalLSTM(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
+    "Transformer": lambda: LongitudinalTransformer(args.embed_dim, args.num_layers, args.transformer_nhead, args.transformer_dim_feedforward, args.transformer_dropout),
+    "MLP": lambda: MLPSimple(args.embed_dim, args.window_size, args.hidden_dim, args.num_layers, args.rnn_dropout), 
+    "TCN": lambda: TCN(args.embed_dim, args.hidden_dim, args.num_layers, kernel_size=3, dropout=args.rnn_dropout) 
+}
+ds_models_defs = {
+    "DeepSurv_RNN": lambda: DeepSurvRNN(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
+    "DeepSurv_LSTM": lambda: DeepSurvLSTM(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
+    "DeepSurv_Transformer": lambda: DeepSurvTransformer(args.embed_dim, args.num_layers, args.transformer_nhead, args.transformer_dim_feedforward, args.transformer_dropout),
+    "DeepSurv_MLP": lambda: DeepSurvMLP(args.embed_dim, args.window_size, args.hidden_dim, args.num_layers, args.rnn_dropout),
+    "DeepSurv_TCN": lambda: DeepSurvTCN(args.embed_dim, args.hidden_dim, args.num_layers, kernel_size=3, dropout=args.rnn_dropout)
+}
 
-    logger.info(f"Building sequences using 'label_ckd_1_year_future' as target (derived from {args.prediction_horizon_days}-day horizon)...")
-    train_seq_cl = build_sequences_1year_future_label(train_meta, args.window_size, args.prediction_horizon_days, for_multitask=False)
-    val_seq_cl = build_sequences_1year_future_label(val_meta, args.window_size, args.prediction_horizon_days, for_multitask=False)
-    test_seq_cl = build_sequences_1year_future_label(test_meta, args.window_size, args.prediction_horizon_days, for_multitask=False)
+all_cl_results, all_ds_results = [], []
+trained_cl_models, trained_ds_models = {}, {}
 
-    if not all([train_seq_cl, val_seq_cl, test_seq_cl]):    
-        logger.error("One or more classification sequence sets are empty. Check data/logic. Exiting."); return
-        
-    train_ds_cl = CKDSequenceDataset(train_seq_cl, args.window_size, args.embed_dim, is_multitask_data=False)
-    val_ds_cl = CKDSequenceDataset(val_seq_cl, args.window_size, args.embed_dim, is_multitask_data=False)
-    test_ds_cl = CKDSequenceDataset(test_seq_cl, args.window_size, args.embed_dim, is_multitask_data=False)
-    train_loader_cl = DataLoader(train_ds_cl, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
-    val_loader_cl = DataLoader(val_ds_cl, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
-    test_loader_cl = DataLoader(test_ds_cl, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
-    logger.info(f"Classification datasets: Train={len(train_ds_cl)}, Val={len(val_ds_cl)}, Test={len(test_ds_cl)} sequences.")
+model_name_suffix = f"{args.prediction_horizon_days}DayFutureTarget"
 
-    logger.info(f"Building sequences for DeepSurv multitask using 'label_ckd_1_year_future' (derived from {args.prediction_horizon_days}-day horizon) + TTE Cox...")
-    train_seq_ds = build_sequences_1year_future_label(train_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
-    val_seq_ds = build_sequences_1year_future_label(val_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
-    test_seq_ds = build_sequences_1year_future_label(test_meta, args.window_size, args.prediction_horizon_days, for_multitask=True)
+if args.epochs > 0:
+    logger.info(f"--- Training Classification-Only Models (Target: 'label_ckd_1_year_future') ---")
+    if len(train_loader_cl) > 0 and len(val_loader_cl) > 0 and len(test_loader_cl) > 0:
+        for name, model_fn in cl_models_defs.items():
+            model_instance = model_fn()
+            results = train_and_evaluate(model_instance, device, train_loader_cl, val_loader_cl, test_loader_cl, args, f"{name}_{model_name_suffix}")
+            all_cl_results.append(results)
+            trained_cl_models[name] = model_instance 
+    else: logger.warning("Skipping classification model training due to empty/insufficient data loaders.")
 
-    if not all([train_seq_ds, val_seq_ds, test_seq_ds]):
-        logger.error("One or more DeepSurv sequence sets are empty. Check data/logic. Exiting."); return
+    logger.info(f"--- Training DeepSurv Multi-Task Models (Target: 'label_ckd_1_year_future' + TTE Cox) ---")
+    if len(train_loader_ds) > 0 and len(val_loader_ds) > 0 and len(test_loader_ds) > 0:
+        for name, model_fn in ds_models_defs.items():
+            model_instance = model_fn()
+            results = train_and_evaluate_deepsurv(model_instance, device, train_loader_ds, val_loader_ds, test_loader_ds, args, f"{name}_{model_name_suffix}")
+            all_ds_results.append(results)
+            trained_ds_models[name] = model_instance 
+    else: logger.warning("Skipping DeepSurv model training due to empty/insufficient data loaders.")
+else: logger.info("Skipping all model training as epochs is 0.")
 
-    train_ds_ds = CKDSequenceDataset(train_seq_ds, args.window_size, args.embed_dim, is_multitask_data=True)
-    val_ds_ds = CKDSequenceDataset(val_seq_ds, args.window_size, args.embed_dim, is_multitask_data=True)
-    test_ds_ds = CKDSequenceDataset(test_seq_ds, args.window_size, args.embed_dim, is_multitask_data=True)
-    train_loader_ds = DataLoader(train_ds_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
-    val_loader_ds = DataLoader(val_ds_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
-    test_loader_ds = DataLoader(test_ds_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=True if torch.cuda.is_available() else False)
-    logger.info(f"DeepSurv multitask datasets: Train={len(train_ds_ds)}, Val={len(val_ds_ds)}, Test={len(test_ds_ds)} sequences.")
+logger.info(f"\n--- Summary: Final Test Metrics (Classification Models - Target: 'label_ckd_1_year_future') ---")
+for res in all_cl_results:
+    if res and isinstance(res, dict):
+        log_line = f"Model={res.get('model_name', 'N/A')} "
+        for met in ["auroc", "auprc", "f1", "accuracy", "precision", "recall", "ppv", "npv"]:
+            log_line += f"{met.upper()}={res.get(met, float('nan')):.4f} "
+        logger.info(log_line)
 
-    device = torch.device(f"cuda:{cuda_num}" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+logger.info(f"\n--- Summary: Final Test Metrics (DeepSurv Multi-Task Models - Target: 'label_ckd_1_year_future') ---")
+for res_ds in all_ds_results:
+    if res_ds and isinstance(res_ds, dict):
+        log_line_ds = f"Model={res_ds.get('model_name', 'N/A')} "
+        for met_ds in ["class_auroc", "class_auprc", "class_f1", "class_accuracy"]: 
+            log_line_ds += f"{met_ds.upper()}={res_ds.get(met_ds, float('nan')):.4f} "
+        log_line_ds += f"C_INDEX_TTE={res_ds.get('concordance_index_tte', float('nan')):.4f}"
+        logger.info(log_line_ds)
 
-    cl_models_defs = {
-        "RNN": lambda: LongitudinalRNN(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
-        "LSTM": lambda: LongitudinalLSTM(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
-        "Transformer": lambda: LongitudinalTransformer(args.embed_dim, args.num_layers, args.transformer_nhead, args.transformer_dim_feedforward, args.transformer_dropout),
-        "MLP": lambda: MLPSimple(args.embed_dim, args.window_size, args.hidden_dim, args.num_layers, args.rnn_dropout), 
-        "TCN": lambda: TCN(args.embed_dim, args.hidden_dim, args.num_layers, kernel_size=3, dropout=args.rnn_dropout) 
-    }
-    ds_models_defs = {
-        "DeepSurv_RNN": lambda: DeepSurvRNN(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
-        "DeepSurv_LSTM": lambda: DeepSurvLSTM(args.embed_dim, args.hidden_dim, args.num_layers, args.rnn_dropout, args.rnn_bidir),
-        "DeepSurv_Transformer": lambda: DeepSurvTransformer(args.embed_dim, args.num_layers, args.transformer_nhead, args.transformer_dim_feedforward, args.transformer_dropout),
-        "DeepSurv_MLP": lambda: DeepSurvMLP(args.embed_dim, args.window_size, args.hidden_dim, args.num_layers, args.rnn_dropout),
-        "DeepSurv_TCN": lambda: DeepSurvTCN(args.embed_dim, args.hidden_dim, args.num_layers, kernel_size=3, dropout=args.rnn_dropout)
-    }
-    
-    all_cl_results, all_ds_results = [], []
-    trained_cl_models, trained_ds_models = {}, {}
+logger.info(f"\n--- Analyzing First Prediction of {args.prediction_horizon_days}-Day Future Event on Test Set ---")
+all_switch_dfs = []
+if len(test_loader_cl) > 0 and args.epochs > 0 : 
+    for name, model_obj in trained_cl_models.items(): # model_obj is already trained
+        df_preds = predict_label_switches(model_obj, test_loader_cl, device, is_deepsurv_model=False)
+        if not df_preds.empty:
+            df_sw = analyze_switches_Nday_future(df_preds, args.prediction_horizon_days)
+            df_sw["ModelType"] = name 
+            all_switch_dfs.append(df_sw)
+            logger.info(f"{args.prediction_horizon_days}-Day Future Event Pred Switch Analysis for {name}:\n{df_sw.head(3).to_string()}")
+            valid_diffs = df_sw[f"SwitchDifference_{args.prediction_horizon_days}DayFuture"].dropna()
+            if not valid_diffs.empty: logger.info(f"{name} - Mean SwitchDiff: {valid_diffs.mean():.2f}, Median: {valid_diffs.median():.2f} visits")
 
-    model_name_suffix = f"{args.prediction_horizon_days}DayFutureTarget"
+if len(test_loader_ds) > 0 and args.epochs > 0:
+    for name, model_obj in trained_ds_models.items(): # model_obj is already trained
+        df_preds_ds = predict_label_switches(model_obj, test_loader_ds, device, is_deepsurv_model=True)
+        if not df_preds_ds.empty:
+            df_sw_ds = analyze_switches_Nday_future(df_preds_ds, args.prediction_horizon_days)
+            df_sw_ds["ModelType"] = name 
+            all_switch_dfs.append(df_sw_ds)
+            logger.info(f"{args.prediction_horizon_days}-Day Future Event Pred Switch Analysis for {name}:\n{df_sw_ds.head(3).to_string()}")
+            valid_diffs_ds = df_sw_ds[f"SwitchDifference_{args.prediction_horizon_days}DayFuture"].dropna()
+            if not valid_diffs_ds.empty: logger.info(f"{name} - Mean SwitchDiff: {valid_diffs_ds.mean():.2f}, Median: {valid_diffs_ds.median():.2f} visits")
 
-    if args.epochs > 0:
-        logger.info(f"--- Training Classification-Only Models (Target: 'label_ckd_1_year_future') ---")
-        if len(train_loader_cl) > 0 and len(val_loader_cl) > 0 and len(test_loader_cl) > 0:
-            for name, model_fn in cl_models_defs.items():
-                model_instance = model_fn()
-                results = train_and_evaluate(model_instance, device, train_loader_cl, val_loader_cl, test_loader_cl, args, f"{name}_{model_name_suffix}")
-                all_cl_results.append(results)
-                trained_cl_models[name] = model_instance 
-        else: logger.warning("Skipping classification model training due to empty/insufficient data loaders.")
+if all_switch_dfs:
+    combined_sw_df = pd.concat(all_switch_dfs, ignore_index=True)
 
-        logger.info(f"--- Training DeepSurv Multi-Task Models (Target: 'label_ckd_1_year_future' + TTE Cox) ---")
-        if len(train_loader_ds) > 0 and len(val_loader_ds) > 0 and len(test_loader_ds) > 0:
-            for name, model_fn in ds_models_defs.items():
-                model_instance = model_fn()
-                results = train_and_evaluate_deepsurv(model_instance, device, train_loader_ds, val_loader_ds, test_loader_ds, args, f"{name}_{model_name_suffix}")
-                all_ds_results.append(results)
-                trained_ds_models[name] = model_instance 
-        else: logger.warning("Skipping DeepSurv model training due to empty/insufficient data loaders.")
-    else: logger.info("Skipping all model training as epochs is 0.")
+    sw_out_dir = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + output_dir
+    os.makedirs(sw_out_dir, exist_ok=True)
+    sw_out_path = os.path.join(sw_out_dir, f"all_models_{args.prediction_horizon_days}day_future_switch_analysis_newlabels.csv")
 
-    logger.info(f"\n--- Summary: Final Test Metrics (Classification Models - Target: 'label_ckd_1_year_future') ---")
-    for res in all_cl_results:
-        if res and isinstance(res, dict):
-            log_line = f"Model={res.get('model_name', 'N/A')} "
-            for met in ["auroc", "auprc", "f1", "accuracy", "precision", "recall", "ppv", "npv"]:
-                log_line += f"{met.upper()}={res.get(met, float('nan')):.4f} "
-            logger.info(log_line)
+    combined_sw_df.to_csv(sw_out_path, index=False)
+    logger.info(f"Combined {args.prediction_horizon_days}-day future switch analysis saved to: {sw_out_path}")
 
-    logger.info(f"\n--- Summary: Final Test Metrics (DeepSurv Multi-Task Models - Target: 'label_ckd_1_year_future') ---")
-    for res_ds in all_ds_results:
-        if res_ds and isinstance(res_ds, dict):
-            log_line_ds = f"Model={res_ds.get('model_name', 'N/A')} "
-            for met_ds in ["class_auroc", "class_auprc", "class_f1", "class_accuracy"]: 
-                log_line_ds += f"{met_ds.upper()}={res_ds.get(met_ds, float('nan')):.4f} "
-            log_line_ds += f"C_INDEX_TTE={res_ds.get('concordance_index_tte', float('nan')):.4f}"
-            logger.info(log_line_ds)
-    
-    logger.info(f"\n--- Analyzing First Prediction of {args.prediction_horizon_days}-Day Future Event on Test Set ---")
-    all_switch_dfs = []
-    if len(test_loader_cl) > 0 and args.epochs > 0 : 
-        for name, model_obj in trained_cl_models.items(): # model_obj is already trained
-            df_preds = predict_label_switches(model_obj, test_loader_cl, device, is_deepsurv_model=False)
-            if not df_preds.empty:
-                df_sw = analyze_switches_Nday_future(df_preds, args.prediction_horizon_days)
-                df_sw["ModelType"] = name 
-                all_switch_dfs.append(df_sw)
-                logger.info(f"{args.prediction_horizon_days}-Day Future Event Pred Switch Analysis for {name}:\n{df_sw.head(3).to_string()}")
-                valid_diffs = df_sw[f"SwitchDifference_{args.prediction_horizon_days}DayFuture"].dropna()
-                if not valid_diffs.empty: logger.info(f"{name} - Mean SwitchDiff: {valid_diffs.mean():.2f}, Median: {valid_diffs.median():.2f} visits")
-    
-    if len(test_loader_ds) > 0 and args.epochs > 0:
-        for name, model_obj in trained_ds_models.items(): # model_obj is already trained
-            df_preds_ds = predict_label_switches(model_obj, test_loader_ds, device, is_deepsurv_model=True)
-            if not df_preds_ds.empty:
-                df_sw_ds = analyze_switches_Nday_future(df_preds_ds, args.prediction_horizon_days)
-                df_sw_ds["ModelType"] = name 
-                all_switch_dfs.append(df_sw_ds)
-                logger.info(f"{args.prediction_horizon_days}-Day Future Event Pred Switch Analysis for {name}:\n{df_sw_ds.head(3).to_string()}")
-                valid_diffs_ds = df_sw_ds[f"SwitchDifference_{args.prediction_horizon_days}DayFuture"].dropna()
-                if not valid_diffs_ds.empty: logger.info(f"{name} - Mean SwitchDiff: {valid_diffs_ds.mean():.2f}, Median: {valid_diffs_ds.median():.2f} visits")
-    
-    if all_switch_dfs:
-        combined_sw_df = pd.concat(all_switch_dfs, ignore_index=True)
-        # change
-        sw_out_dir = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + output_dir
-        os.makedirs(sw_out_dir, exist_ok=True)
-        sw_out_path = os.path.join(sw_out_dir, f"all_models_{args.prediction_horizon_days}day_future_switch_analysis_newlabels.csv")
-        # end of change
-        combined_sw_df.to_csv(sw_out_path, index=False)
-        logger.info(f"Combined {args.prediction_horizon_days}-day future switch analysis saved to: {sw_out_path}")
+logger.info("Script finished.")
 
-    logger.info("Script finished.")
-
-if __name__ == "__main__":
-    main()
+# %%
