@@ -55,7 +55,10 @@ if not subset:
 if filtering_stage: 
     output_dir += "_stage_filter" # ""
 
-version = '_eskd'
+baseline = '_eskd'
+output_dir += baseline
+
+version = '_v2'
 output_dir += version
 print(output_dir)
 
