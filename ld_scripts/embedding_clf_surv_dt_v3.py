@@ -30,11 +30,10 @@ years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = True
 output_dir = ""
-full_embeddings = True
-version = "_v8"
+version = "_v3"
 cuda_num = 0 
 n_workers = 16 # 0, 12, 16, 20
-subset = 4
+
 #%%
 # comment out
 # import sys
@@ -42,17 +41,19 @@ subset = 4
 # print("test")
 #%%
 
-if full_embeddings: 
+subset = True
+size = 4
+if not subset: 
     print(f"cuda:{str(cuda_num)}")
     embedding_path = "/opt/data/commonfilesharePHI/jnchiang/projects/OptumCKD/ckd_embedding_full_v3_icd_stage_filter"
     metadata_file = "meta_v3.csv" #sep='$' # meta_v3_all.csv, meta_v3.csv
     output_dir += "_full"
-# subset
-if not full_embeddings: 
+if subset: 
     print(f"cuda:{str(cuda_num)}")
-    embedding_path = f"./embeddings_subset_{subset}"
-    metadata_file = f"meta_v3_subset_{subset}.csv"
-    output_dir += f"_subset_{subset}"
+    embedding_path = f"./embeddings_subset_{size}"
+    metadata_file = f"meta_v3_subset_{size}.csv"
+    output_dir += f"_subset_{size}"
+
 if filtering_stage: 
     output_dir += "_stage_filter" # ""
 
@@ -175,13 +176,15 @@ class CKDSequenceDataset(Dataset):
         classification_target_label = item[1] # This is 'label_ckd_1_year_future'
         pid = item[2]
         local_idx = item[3]
+        # added
         date = item[4] # added
+        ckd_stage = item[5]
 
         context_padded = pad_sequence(list(context), self.window_size, self.embed_dim)
 
         if self.is_multitask_data:
-            tte_for_cox = item[5] #
-            event_for_cox = item[6] #  
+            tte_for_cox = item[6] #
+            event_for_cox = item[7] #  
 
             return (
                 torch.tensor(context_padded, dtype=torch.float32),
@@ -189,6 +192,7 @@ class CKDSequenceDataset(Dataset):
                 pid, 
                 local_idx, 
                 date, # added
+                ckd_stage,
                 torch.tensor(tte_for_cox if pd.notna(tte_for_cox) else float('nan'), dtype=torch.float32), 
                 torch.tensor(event_for_cox, dtype=torch.float32) 
             )
@@ -198,7 +202,8 @@ class CKDSequenceDataset(Dataset):
                 torch.tensor(classification_target_label, dtype=torch.long), 
                 pid, 
                 local_idx,
-                date # added
+                date, # added
+                ckd_stage
             )
 
 class LongitudinalRNN(nn.Module):
@@ -729,7 +734,7 @@ def time_to_event_preprocessing(meta_df_input, log_transform_tte=False):
 def build_sequences_1year_future_label(metadata_df, window_size, prediction_horizon_days_param_unused, for_multitask=False):
     data_records = []
     
-    required_cols = ["PatientID", "date", "embedding", "label_ckd_1_year_future"] # MODIFIED: Uses pre-calculated label
+    required_cols = ["PatientID", "date", "CKD_stage_numeric", "embedding", "label_ckd_1_year_future"] # MODIFIED: Uses pre-calculated label
     
     if for_multitask:
         required_cols.extend(["time_to_first_progression", "event_for_cox"])
@@ -759,10 +764,12 @@ def build_sequences_1year_future_label(metadata_df, window_size, prediction_hori
             
             classification_target_label = target_labels_for_prediction[i] # MODIFIED: Directly use pre-calculated label
             date = group["date"].iloc[i].strftime('%Y-%m-%d')
+            # print(group)
+            ckd_stage = group["CKD_stage_numeric"].iloc[i]
+            # print(ckd_stage, type(ckd_stage), ckd_stage.item())
             # print(date)
             # sys.exit(1)
             
-
             if for_multitask:
                 data_records.append((
                     context_embeddings,
@@ -770,6 +777,7 @@ def build_sequences_1year_future_label(metadata_df, window_size, prediction_hori
                     pid,
                     i, 
                     date, # added
+                    ckd_stage,
                     tte_cox_list[i],  
                     event_cox_list[i]  
                 ))
@@ -780,6 +788,7 @@ def build_sequences_1year_future_label(metadata_df, window_size, prediction_hori
                     pid,
                     i,
                     date, # added
+                    ckd_stage,
                 ))
     return data_records
 
@@ -806,7 +815,8 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         train_total_losses, train_class_losses, train_surv_losses = [], [], []
         for batch_idx, batch_data in enumerate(train_loader):
             optimizer.zero_grad()
-            x_batch, classification_target, pid_batch, _, _, tte_cox, event_cox = batch_data
+            # x_batch, classification_target, pid_batch, _, _, tte_cox, event_cox = batch_data
+            x_batch, classification_target, pid_batch, _, _, _, tte_cox, event_cox = batch_data
 
             x_batch = x_batch.to(device)
             classification_target = classification_target.to(device)  
@@ -843,8 +853,9 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
         val_total_losses, val_class_losses, val_surv_losses = [], [], []
         with torch.no_grad():
             for batch_data_val in val_loader:
-                x_val, class_target_val, _, _, _, tte_cox_val, event_cox_val = batch_data_val
-                # x_val, class_target_val, _, _, tte_cox_val, event_cox_val = batch_data_val
+                # x_val, class_target_val, _, _, _, tte_cox_val, event_cox_val = batch_data_val
+                x_val, class_target_val, _, _, _, _, tte_cox_val, event_cox_val = batch_data_val
+
                 x_val, class_target_val = x_val.to(device), class_target_val.to(device)
                 tte_cox_val, event_cox_val = tte_cox_val.to(device), event_cox_val.to(device)
 
@@ -902,11 +913,14 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
     all_risk_scores_test, all_tte_cox_test, all_event_cox_test = [], [], []
     all_pids_test = []  
     all_dates_test = [] # added
+    all_stages_test = []
 
     with torch.no_grad():
         for batch_test in test_loader:
             # 
-            x_test, cl_target_t, pid_batch_t, _, date_batch_t, tte_cox_t, event_cox_t = batch_test
+            # x_test, cl_target_t, pid_batch_t, _, date_batch_t, tte_cox_t, event_cox_t = batch_test
+            x_test, cl_target_t, pid_batch_t, _, date_batch_t, stage_batch_t, tte_cox_t, event_cox_t = batch_test
+
             x_test = x_test.to(device)
 
             cl_logits_t, risk_t = model(x_test)
@@ -920,6 +934,7 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
             all_event_cox_test.extend(event_cox_t.cpu().numpy())
             all_pids_test.extend(pid_batch_t) 
             all_dates_test.extend(date_batch_t) # added
+            all_stages_test.extend(stage_batch_t) # added
 
     all_cl_targets_test = np.array(all_cl_targets_test)
     all_cl_probs_test = np.array(all_cl_probs_test)
@@ -965,9 +980,12 @@ def train_and_evaluate_deepsurv(model, device, train_loader, val_loader, test_lo
 
     output_dir_details = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + output_dir
     os.makedirs(output_dir_details, exist_ok=True)
+    all_stages_test = [i.item() for i in all_stages_test]
+    # all_stages_test = all_stages_test.cpu().numpy().tolist()
     df_details = pd.DataFrame({
         "PatientID": all_pids_test,  
         "EncounterDate": all_dates_test,
+        "CKD_stage_numeric": all_stages_test,
         "cl_logit_0": all_cl_logits_test[:, 0] if len(all_cl_logits_test.shape) == 2 else ([np.nan] * len(all_cl_targets_test) if len(all_cl_logits_test) > 0 else []),
         "cl_logit_1": all_cl_logits_test[:, 1] if len(all_cl_logits_test.shape) == 2 else ([np.nan] * len(all_cl_targets_test) if len(all_cl_logits_test) > 0 else []),
         "cl_prob_1": all_cl_probs_test,
@@ -1004,7 +1022,8 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         train_losses = []
         for batch_idx, batch_data in enumerate(train_loader):
             optimizer.zero_grad()
-            x_batch, y_batch, _, _, _ = batch_data  # y_batch is 'label_ckd_1_year_future'
+            # x_batch, y_batch, _, _, _ = batch_data  # y_batch is 'label_ckd_1_year_future'
+            x_batch, y_batch, _, _, _, _ = batch_data  # y_batch is 'label_ckd_1_year_future'
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
             logits = model(x_batch)
@@ -1024,7 +1043,8 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
         val_losses = []
         with torch.no_grad():
             for batch_val in val_loader:
-                x_val, y_val, _, _, _ = batch_val
+                # x_val, y_val, _, _, _ = batch_val
+                x_val, y_val, _, _, _, _ = batch_val
                 x_val, y_val = x_val.to(device), y_val.to(device)
                 logits_val = model(x_val)
                 loss_val = classification_criterion(logits_val, y_val.long())
@@ -1062,9 +1082,11 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
     all_pids_test = []  
     all_local_idx_test = []
     all_dates_test = []
+    all_stages_test = []
+    
     with torch.no_grad():
         for batch_t in test_loader:
-            x_t, y_t, pid_batch_t, local_idx_t, date_batch_t = batch_t #added
+            x_t, y_t, pid_batch_t, local_idx_t, date_batch_t, stage_batch_t = batch_t #added
             x_t = x_t.to(device)
             logits_t = model(x_t)
             probs_t = nn.Softmax(dim=1)(logits_t)[:, 1]
@@ -1074,6 +1096,7 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
             all_pids_test.extend(pid_batch_t)  
             all_local_idx_test.extend(local_idx_t.cpu().numpy()) # check
             all_dates_test.extend(date_batch_t) # added
+            all_stages_test.extend(stage_batch_t)
 
     all_targets_test = np.array(all_targets_test)
     all_probs_test = np.array(all_probs_test)
@@ -1099,10 +1122,13 @@ def train_and_evaluate(model, device, train_loader, val_loader, test_loader, arg
 
     output_dir_dets = f"./{args.prediction_horizon_days}day_future_prediction_outputs_50" + output_dir
     os.makedirs(output_dir_dets, exist_ok=True)
+    all_stages_test = [i.item() for i in all_stages_test]
+    # all_stages_test = all_stages_test.cpu().numpy().tolist()
     df_dets = pd.DataFrame({
         "PatientID": all_pids_test,  
         "LocalIndex": all_local_idx_test, # added
         "EncounterDate": all_dates_test, # added
+        "CKD_stage_numeric": all_stages_test,
         "cl_logit_0": all_logits_test[:, 0] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
         "cl_logit_1": all_logits_test[:, 1] if len(all_logits_test.shape) == 2 else ([np.nan] * len(all_targets_test) if len(all_logits_test) > 0 else []),
         "cl_prob_1": all_probs_test, # "prob_positive"
@@ -1121,9 +1147,11 @@ def predict_label_switches(model, loader, device, is_deepsurv_model=False):
     with torch.no_grad():
         for batch_data in loader:
             if is_deepsurv_model:
-                x_batch, y_batch, pid_batch, idx_batch, _, _, _ = batch_data  # added
+                # x_batch, y_batch, pid_batch, idx_batch, _, _, _ = batch_data  # added
+                x_batch, y_batch, pid_batch, idx_batch, _, _, _, _ = batch_data  # added
             else:
-                x_batch, y_batch, pid_batch, idx_batch, _ = batch_data 
+                # x_batch, y_batch, pid_batch, idx_batch, _ = batch_data 
+                x_batch, y_batch, pid_batch, idx_batch, _, _ = batch_data 
             
             x_batch = x_batch.to(device)
             if is_deepsurv_model:

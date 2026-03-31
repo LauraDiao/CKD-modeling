@@ -42,15 +42,15 @@ print("test")
 #%%
 
 subset = False
+if not subset: 
+    # print(f"cuda:{str(cuda_num)}")
+    tab_path = f"./tabular_full/processed_tab_eskd.csv"    
+    output_dir += "_full"
 if subset: 
     # print(f"cuda:{str(cuda_num)}")
     size = "100" # 10, 100, full 
     tab_path = f"./tabular_subset_{size}/processed_tab_eskd.csv"
     output_dir += f"_subset_{size}"
-if not subset: 
-    # print(f"cuda:{str(cuda_num)}")
-    tab_path = f"./tabular_full/processed_tab_eskd.csv"    
-    output_dir += "_full"
 
 if filtering_stage: 
     output_dir += "_stage_filter" # ""
