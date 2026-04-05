@@ -1,0 +1,115 @@
+
+Processing file: DeepSurv_LSTM_365DayFutureTarget_detailed_outputs
+Optimal threshold selected: 0.030
+Metrics: 
+AUROC 0.8948072629424867
+AUPRC 0.8280733070277154
+F1 0.4953818536573656
+PPV 0.32958154744199136
+Recall 0.9968706836039218
+Avg Precision 0.8280733070277154
+Avg Recall 0.9968706836039218
+Confusion Matrix {'True Negative': np.int64(112373), 'False Positive': np.int64(1343296), 'False Negative': np.int64(2073), 'True Positive': np.int64(660372)}
+Bootstrapping with 1000 iterations using 20 workers...
+Bootstrapping completed.
+Bootstrapped Metrics with 95% Confidence Intervals:
+  AUROC: 0.8948 [0.8943, 0.8953]
+  AUPRC: 0.8281 [0.8273, 0.8289]
+  F1: 0.4954 [0.4947, 0.4961]
+  PPV: 0.3296 [0.3290, 0.3302]
+  Recall: 0.9969 [0.9967, 0.9970]
+  Avg Precision: 0.8281 [0.8273, 0.8289]
+  Avg Recall: 0.9969 [0.9967, 0.9970]
+  Confusion Matrix: 529528.5000 [35547.9750, 1377360.0250]
+
+Processing file: DeepSurv_MLP_365DayFutureTarget_detailed_outputs
+Optimal threshold selected: 0.030
+Metrics: 
+AUROC 0.8350377626778518
+AUPRC 0.7324642314932863
+F1 0.477005933035031
+PPV 0.3132270452804132
+Recall 0.9997524322773966
+Avg Precision 0.7324642314932863
+Avg Recall 0.9997524322773966
+Confusion Matrix {'True Negative': np.int64(3570), 'False Positive': np.int64(1452099), 'False Negative': np.int64(164), 'True Positive': np.int64(662281)}
+Bootstrapping with 1000 iterations using 20 workers...
+Bootstrapping completed.
+Bootstrapped Metrics with 95% Confidence Intervals:
+  AUROC: 0.8350 [0.8344, 0.8356]
+  AUPRC: 0.7324 [0.7314, 0.7335]
+  F1: 0.4770 [0.4764, 0.4777]
+  PPV: 0.3132 [0.3127, 0.3138]
+  Recall: 0.9998 [0.9997, 0.9998]
+  Avg Precision: 0.7324 [0.7314, 0.7335]
+  Avg Recall: 0.9998 [0.9997, 0.9998]
+  Confusion Matrix: 529528.5000 [1125.9750, 1453170.0000]
+
+Processing file: DeepSurv_RNN_365DayFutureTarget_detailed_outputs
+Optimal threshold selected: 0.030
+Metrics: 
+AUROC 0.9039978594074177
+AUPRC 0.8400234947294265
+F1 0.5246591585057668
+PPV 0.3566523826453211
+Recall 0.99191781959257
+Avg Precision 0.8400234947294265
+Avg Recall 0.99191781959257
+Confusion Matrix {'True Negative': np.int64(270375), 'False Positive': np.int64(1185294), 'False Negative': np.int64(5354), 'True Positive': np.int64(657091)}
+Bootstrapping with 1000 iterations using 20 workers...
+Bootstrapping completed.
+Bootstrapped Metrics with 95% Confidence Intervals:
+  AUROC: 0.9040 [0.9035, 0.9045]
+  AUPRC: 0.8400 [0.8392, 0.8408]
+  F1: 0.5247 [0.5239, 0.5254]
+  PPV: 0.3567 [0.3560, 0.3573]
+  Recall: 0.9919 [0.9917, 0.9921]
+  Avg Precision: 0.8400 [0.8392, 0.8408]
+  Avg Recall: 0.9919 [0.9917, 0.9921]
+  Confusion Matrix: 529528.5000 [85929.9500, 1266709.0250]
+
+Processing file: DeepSurv_TCN_365DayFutureTarget_detailed_outputs
+Optimal threshold selected: 0.030
+Metrics: 
+AUROC 0.8703521363766599
+AUPRC 0.8010526578557716
+F1 0.4826724486689542
+PPV 0.3184252375519683
+Recall 0.9968676644853535
+Avg Precision 0.8010526578557716
+Avg Recall 0.9968676644853535
+Confusion Matrix {'True Negative': np.int64(42177), 'False Positive': np.int64(1413492), 'False Negative': np.int64(2075), 'True Positive': np.int64(660370)}
+Bootstrapping with 1000 iterations using 20 workers...
+Bootstrapping completed.
+Bootstrapped Metrics with 95% Confidence Intervals:
+  AUROC: 0.8704 [0.8698, 0.8709]
+  AUPRC: 0.8011 [0.8001, 0.8020]
+  F1: 0.4827 [0.4820, 0.4834]
+  PPV: 0.3184 [0.3178, 0.3191]
+  Recall: 0.9969 [0.9967, 0.9970]
+  Avg Precision: 0.8011 [0.8001, 0.8020]
+  Avg Recall: 0.9969 [0.9967, 0.9970]
+  Confusion Matrix: 529528.5000 [13686.0000, 1425485.0250]
+
+Processing file: DeepSurv_Transformer_365DayFutureTarget_detailed_outputs
+Optimal threshold selected: 0.030
+Metrics: 
+AUROC 0.8780571672537706
+AUPRC 0.801211197128949
+F1 0.48543532372580894
+PPV 0.32079315133681013
+Recall 0.9972676976956577
+Avg Precision 0.801211197128949
+Avg Recall 0.9972676976956577
+Confusion Matrix {'True Negative': np.int64(56924), 'False Positive': np.int64(1398745), 'False Negative': np.int64(1810), 'True Positive': np.int64(660635)}
+Bootstrapping with 1000 iterations using 20 workers...
+Bootstrapping completed.
+Bootstrapped Metrics with 95% Confidence Intervals:
+  AUROC: 0.8781 [0.8775, 0.8786]
+  AUPRC: 0.8012 [0.8002, 0.8022]
+  F1: 0.4854 [0.4847, 0.4862]
+  PPV: 0.3208 [0.3202, 0.3214]
+  Recall: 0.9973 [0.9971, 0.9974]
+  Avg Precision: 0.8012 [0.8002, 0.8022]
+  Avg Recall: 0.9973 [0.9971, 0.9974]
+  Confusion Matrix: 529528.5000 [18211.0000, 1415555.0250]

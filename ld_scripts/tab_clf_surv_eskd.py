@@ -500,7 +500,7 @@ def train_and_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_
 
     logger.info(f"{model_name}: Trained for specified number of estimators/iterations.")
     
-    model_path = f"{args.output_model_prefix}_{model_name}.joblib"
+    model_path = f"results_files/{args.output_model_prefix}_{model_name}.joblib"
     joblib.dump(model, model_path)
     logger.info(f"{model_name}: Model saved to {model_path}")
 
@@ -584,7 +584,7 @@ def train_and_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_ti
     
     logger.info(f"{model_name}: Trained for specified number of estimators.")
 
-    model_path = f"{args.output_model_prefix}_{model_name}.joblib"
+    model_path = f"results_files/{args.output_model_prefix}_{model_name}.joblib"
     joblib.dump(model, model_path)
     logger.info(f"{model_name}: Survival model saved to {model_path}")
 
