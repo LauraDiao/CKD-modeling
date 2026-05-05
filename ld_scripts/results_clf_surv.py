@@ -378,7 +378,7 @@ def plot_roc_pr_curves(results):
     plt.legend()
     plt.tight_layout()
 
-    figname = "ROC_Curves.png"
+    figname = f"{modifier}_ROC_Curves.png"
     figpath = os.path.join(out_path, figname)
     plt.savefig(figpath)
     plt.show()
@@ -395,7 +395,7 @@ def plot_roc_pr_curves(results):
     plt.legend()
     plt.tight_layout()
 
-    figname = "Precision_Recall_Curves.png"
+    figname = f"{modifier}_Precision_Recall_Curves.png"
     figpath = os.path.join(out_path, figname)
     plt.savefig(figpath)
     plt.show()
@@ -417,7 +417,7 @@ def plot_metric_bars(all_boot_metrics):
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
 
-        figname = f"{metric}.png"
+        figname = f"{modifier}_{metric}.png"
         figpath = os.path.join(out_path, figname)
         plt.savefig(figpath)
         plt.show()
@@ -503,27 +503,26 @@ fp = f"./365day_future_prediction_outputs_50_full_stage_filter_v8"
 # fp = "./365day_future_prediction_outputs_50_full_stage_filter_patient_level_v2"
 
 
-dirs = [
-    "/LSTM_365DayFutureTarget_detailed_outputs.csv",
-    "/MLP_365DayFutureTarget_detailed_outputs.csv",
-    "/RNN_365DayFutureTarget_detailed_outputs.csv",
-    "/TCN_365DayFutureTarget_detailed_outputs.csv",
-    "/Transformer_365DayFutureTarget_detailed_outputs.csv",
-]
-
 # dirs = [
-#     "/DeepSurv_LSTM_365DayFutureTarget_detailed_outputs.csv",
-#     "/DeepSurv_MLP_365DayFutureTarget_detailed_outputs.csv",
-#     "/DeepSurv_RNN_365DayFutureTarget_detailed_outputs.csv",
-#     "/DeepSurv_TCN_365DayFutureTarget_detailed_outputs.csv",
-#     "/DeepSurv_Transformer_365DayFutureTarget_detailed_outputs.csv",
+#     "/LSTM_365DayFutureTarget_detailed_outputs.csv",
+#     "/MLP_365DayFutureTarget_detailed_outputs.csv",
+#     "/RNN_365DayFutureTarget_detailed_outputs.csv",
+#     "/TCN_365DayFutureTarget_detailed_outputs.csv",
+#     "/Transformer_365DayFutureTarget_detailed_outputs.csv",
 # ]
+
+dirs = [
+    "/DeepSurv_LSTM_365DayFutureTarget_detailed_outputs.csv",
+    "/DeepSurv_MLP_365DayFutureTarget_detailed_outputs.csv",
+    "/DeepSurv_RNN_365DayFutureTarget_detailed_outputs.csv",
+    "/DeepSurv_TCN_365DayFutureTarget_detailed_outputs.csv",
+    "/DeepSurv_Transformer_365DayFutureTarget_detailed_outputs.csv",
+]
 
 # %%
 # baseline event level
-fp_eskd = f"./365day_future_prediction_outputs_stage_filter_full_stage_filter_eskd_v2"
-dirs_eskd = ['/XGBoost_365DayFuture_Classifier_detailed_outputs_classification.csv']
-
+# fp_eskd = f"./365day_future_prediction_outputs_stage_filter_full_stage_filter_eskd_v2"
+# dirs_eskd = ['/XGBoost_365DayFuture_Classifier_detailed_outputs_classification.csv']
 
 # baseline patient level
 # fp_eskd = f"./365day_future_prediction_outputs_stage_filter_full_stage_filter_eskd_v2_patient_level"
@@ -535,15 +534,15 @@ dirs_eskd = ['/XGBoost_365DayFuture_Classifier_detailed_outputs_classification.c
 #  ]
 
 # %%
-filepaths2 = [fp_eskd + i for i in dirs_eskd]
-filepaths2
+# filepaths2 = [fp_eskd + i for i in dirs_eskd]
+# filepaths2
 
 # %%
 filepaths1 = [fp + i for i in dirs]
 filepaths1
 
 # %%
-filepaths = filepaths1 + filepaths2
+filepaths = filepaths1 # + filepaths2
 filepaths
 
 # %%

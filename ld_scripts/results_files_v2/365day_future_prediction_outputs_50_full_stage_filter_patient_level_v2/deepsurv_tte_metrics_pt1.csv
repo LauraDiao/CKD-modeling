@@ -1,0 +1,6 @@
+Model,AUC@365,C-index,True Negative,False Positive,False Negative,True Positive
+DeepSurv_LSTM_365DayFutureTarget_detailed_outputs,0.9771624905110449,0.9583832711300385,6042,915,60,937
+DeepSurv_MLP_365DayFutureTarget_detailed_outputs,0.9736052128015229,0.960006222490959,5963,994,70,927
+DeepSurv_RNN_365DayFutureTarget_detailed_outputs,0.979791705410048,0.9615863545790467,274,6683,0,997
+DeepSurv_TCN_365DayFutureTarget_detailed_outputs,0.9786487120937262,0.9628989022551335,3092,3865,14,983
+DeepSurv_Transformer_365DayFutureTarget_detailed_outputs,0.9744931349265609,0.9573892008063716,2973,3984,14,983

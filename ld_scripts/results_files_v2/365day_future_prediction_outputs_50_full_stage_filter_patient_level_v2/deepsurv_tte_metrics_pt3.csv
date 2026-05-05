@@ -1,0 +1,6 @@
+Model,AUC@365,C-index,brier_score
+DeepSurv_LSTM_365DayFutureTarget_detailed_outputs,,0.9326719241761025,
+DeepSurv_MLP_365DayFutureTarget_detailed_outputs,,0.9196849111890895,
+DeepSurv_RNN_365DayFutureTarget_detailed_outputs,,0.9406432008103317,
+DeepSurv_TCN_365DayFutureTarget_detailed_outputs,,0.934959121658286,
+DeepSurv_Transformer_365DayFutureTarget_detailed_outputs,,0.9197681148934631,
