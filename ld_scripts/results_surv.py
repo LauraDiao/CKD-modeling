@@ -573,7 +573,7 @@ def evaluate_models_pt3(filepaths, EVAL_DAY=365, n_boot=1000, n_workers=8,
         all_boot_metrics[name] = boot_metrics
         
         # plot_risk_distribution(df_full, name)
-        # plot_risk_vs_tte(merged, name)
+        # plot_risk_vs_tte(df_full, name)
     
     metrics_df = pd.DataFrame(df_list)
     return metrics_df#, results, all_boot_metrics
@@ -671,7 +671,7 @@ with open(log_path, 'w') as f:
         
         metrics_1 = evaluate_models_pt1(filepaths, verbose=False)
         metrics_2 = evaluate_models_pt2(filepaths, verbose=False)
-        metrics_3 = evaluate_models_pt3(filepaths, EVAL_DAY = 365, n_boot= 1000, n_workers=16
+        metrics_3 = evaluate_models_pt3(filepaths, EVAL_DAY = 365, n_boot= 1000, n_workers=20
         , N_PROGRESSOR_SAMPLES= 5, RANDOM_SEED = 42, verbose=False)
 
 
