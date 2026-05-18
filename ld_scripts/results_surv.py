@@ -17,6 +17,7 @@ fp = f"./365day_future_prediction_outputs_50_full_stage_filter_v{version}"
 # full patient level 
 # fp = "./365day_future_prediction_outputs_50_full_stage_filter_patient_level_v2"
 
+# %%
 dirs = [
     "/DeepSurv_LSTM_365DayFutureTarget_detailed_outputs.csv",
     "/DeepSurv_MLP_365DayFutureTarget_detailed_outputs.csv",
@@ -139,6 +140,9 @@ def evaluate_day_365(surv, risks: np.ndarray, threshold: float = 0.2) -> dict:
     
 
     return {"AUC@365": auc_365, "C-index": float(c_index), "Confusion Matrix": matrix}
+
+# %%
+
 
 # %%
 # eval pt1
@@ -280,7 +284,7 @@ def sample_shared_test_set(df, horizon, N_PROGRESSOR_SAMPLES, RANDOM_SEED):
     return pd.DataFrame(samples).drop_duplicates(subset=["PatientID", "tte_cox_true_time"])
 
 
-def evaluate_model_fullsample(df, eval_day, bootstrap=False, random_state=None):
+def evaluate_model_fullsample_2(df, eval_day, bootstrap=False, random_state=None):
     """
     Compute C-index, time-dependent AUC@eval_day, and IPCW Brier@eval_day
     using the entire test sample without further dropping.
@@ -338,7 +342,7 @@ def evaluate_model_fullsample(df, eval_day, bootstrap=False, random_state=None):
     # return c_index, auc_365, brier_365
     return {"AUC@365": auc_365, "C-index": float(c_index), "brier_score": brier_365}
     
-def evaluate_model_fullsample_v0(df, eval_day):
+def evaluate_model_fullsample(df, eval_day):
     """
     Compute C-index, time-dependent AUC@eval_day, and IPCW Brier@eval_day
     using the entire test sample without further dropping.
@@ -347,40 +351,51 @@ def evaluate_model_fullsample_v0(df, eval_day):
     T = df['tte_cox_true_time'].values
     E = df['tte_cox_true_event'].astype(bool).values
     R = df['tte_cox_risk_score'].values
+    print(df.head())
+    
+    # surv = Surv.from_arrays(E, T)
+    surv, risks = create_surv_object(df)
 
-    surv = Surv.from_arrays(E, T)
-
+    from scipy.special import expit
+    surv_probs = 1 - expit(R)
     # Concordance
     try:
-        c_index = concordance_index(T, -R, event_observed=E)
+        c_index = concordance_index_ipcw(surv, surv, R)[0]
+
+        # c_index = concordance_index(T, -R, event_observed=E)
     except Exception:
         c_index = np.nan
 
     # Time-dependent AUC
     try:
-        _, auc_vals = cumulative_dynamic_auc(
-            surv_train=surv,
-            surv_test=surv,
-            risk_scores_train=-R,
-            risk_scores_test=-R,
-            times=np.array([eval_day])
-        )
-        auc_365 = float(auc_vals[0])
+        _, auc_vals = cumulative_dynamic_auc(surv, surv, risks, eval_day)
+        auc_365 = float(auc_vals[0]) if isinstance(auc_vals, (list, np.ndarray)) else float(auc_vals)
+    
+        # _, auc_vals = cumulative_dynamic_auc(
+        #     survival_train=surv,
+        #     survival_test=surv,
+        #     estimate=R,
+        #     times=np.array([eval_day])
+        # )
+        # auc_365 = float(auc_vals) 
     except Exception:
         auc_365 = np.nan
+    
 
     # IPCW-weighted Brier score
     try:
         _, brier_vals = brier_score(
-            surv_train=surv,
-            surv_test=surv,
-            pred_scores=-R,
+            survival_train=surv,
+            survival_test=surv,
+            estimate=surv_probs,
             times=np.array([eval_day])
         )
         brier_365 = float(brier_vals[0])
+        
     except Exception:
         brier_365 = np.nan
 
+    
     # return c_index, auc_365, brier_365
     return {"AUC@365": auc_365, "C-index": float(c_index), "brier_score": brier_365}
 
@@ -518,20 +533,33 @@ def evaluate_models_pt3(filepaths, EVAL_DAY=365, n_boot=1000, n_workers=8,
 
         df_full = pd.read_csv(filepath)
         
-        # print()
-        # print("Full Data shape:", df_full.shape)
-        # # *** MERGE WITH SHARED TEST SET ***
-        # # This ensures we use the same timepoints across all models
-        # merged = (
-        #     test_df[['PatientID', 'tte_cox_true_time', 'tte_cox_true_event']]
-        #     .merge(
-        #         df_full[['PatientID', 'tte_cox_true_time', 'tte_cox_risk_score']],
-        #         on=['PatientID', 'tte_cox_true_time'],
-        #         how='inner'
-        #     )
-        # )
-        # print("Data shape:", merged.shape)
-        # print(merged.head())
+        print()
+        print("Full Data shape:", df_full.shape)
+        #  MERGE WITH SHARED TEST SET 
+        # use the same timepoints across all models
+        print(test_df.columns)
+        print(df_full.columns)
+        merged = (
+            # df_full.merge(
+            #     test_df[['PatientID', 'tte_cox_true_time']],
+            #     on=['PatientID', 'tte_cox_true_time'],
+            #     how='inner'
+            # )
+            test_df[['PatientID', 'tte_cox_true_time', 'tte_cox_true_event']]
+            .merge(
+                df_full[['PatientID', 'tte_cox_true_time', 'tte_cox_risk_score']],
+                on=['PatientID', 'tte_cox_true_time'],
+                how='inner'
+            )
+        )
+        print(merged.columns)
+        df_full = merged
+
+        print("Data shape:", merged.shape)
+        print(merged.head())
+
+        print("Data shape:", df_full.shape)
+        print(df_full.head())
         
         print(f"Computing metrics at evaluation day {EVAL_DAY}...")
         metrics = evaluate_model_fullsample(df_full, EVAL_DAY)
@@ -572,8 +600,8 @@ def evaluate_models_pt3(filepaths, EVAL_DAY=365, n_boot=1000, n_workers=8,
         }
         all_boot_metrics[name] = boot_metrics
         
-        # plot_risk_distribution(df_full, name)
-        # plot_risk_vs_tte(df_full, name)
+        plot_risk_distribution(df_full, name)
+        plot_risk_vs_tte(df_full, name)
     
     metrics_df = pd.DataFrame(df_list)
     return metrics_df#, results, all_boot_metrics
@@ -674,8 +702,6 @@ with open(log_path, 'w') as f:
         metrics_3 = evaluate_models_pt3(filepaths, EVAL_DAY = 365, n_boot= 1000, n_workers=20
         , N_PROGRESSOR_SAMPLES= 5, RANDOM_SEED = 42, verbose=False)
 
-
-# log_file.close()
 
 # %%
 def metrics_to_csv(path, metrics):
