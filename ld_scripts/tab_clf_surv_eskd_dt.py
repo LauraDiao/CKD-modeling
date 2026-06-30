@@ -31,8 +31,7 @@ years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = True
 output_dir = ""
-if filtering_stage: 
-    output_dir += "_stage_filter" # ""
+
 
 #%%
 # comment out
@@ -41,7 +40,7 @@ sys.argv=['']
 print("test")
 #%%
 
-subset = False
+subset = True
 if not subset: 
     # print(f"cuda:{str(cuda_num)}")
     tab_path = f"./tabular_full/processed_tab_eskd.csv"    
@@ -330,7 +329,7 @@ def time_to_event_preprocessing_tabular(meta_df_input, source_label_col='label_c
     return meta
 
 
-
+#  dead function
 def build_sequences_1year_future_label(metadata_df, window_size, prediction_horizon_days, for_multitask=False):
     data_records = [] 
     required_cols = ["PatientID", "EventDate", "embedding", "label"]
@@ -422,10 +421,11 @@ def build_sequences(meta, window_size, target_label_col=f'label_ckd_{years}_year
     return sequence_data
 
 # Adapted build_sequences_for_multitask
-def build_sequences_for_multitask(meta, window_size, 
+def build_sequences_for_multitask0(meta, window_size, 
                                   classification_target_col='label_ckd_1_year_future',
                                   tte_time_col='time_until_progression', # Was 'time_until_progression'
                                   # Removed tte_event_col as it's taken from classification_target_col by current DeepSurv train loop
+                                  tte_event_col='event_for_cox_indicator', 
                                   feature_col='embedding'):
     data_records = []
     required_cols = [classification_target_col, tte_time_col, feature_col]
@@ -457,10 +457,64 @@ def build_sequences_for_multitask(meta, window_size,
             # 5 items
             # data_records.append((context, classification_target, pid, k, time_for_tte, classification_target))
             # 7 items
-            data_records.append((context, classification_target, pid, k, time_for_tte, classification_target, event_dates[k], ckd_stages[k]))
+            data_records.append((
+                context, 
+                classification_target, 
+                pid, 
+                k, 
+                time_for_tte, 
+                classification_target, 
+                event_dates[k], 
+                ckd_stages[k]
+                ))
 
     return data_records
-    
+
+def build_sequences_for_multitask(meta, window_size, 
+                                  classification_target_col='label_ckd_1_year_future',
+                                  tte_time_col='time_until_progression',
+                                  tte_event_col='event_for_cox_indicator',  # update; event
+                                  feature_col='embedding'):
+    data_records = []
+    required_cols = [classification_target_col, tte_time_col, tte_event_col, feature_col]
+    for col in required_cols:
+        if col not in meta.columns:
+            raise ValueError(f"Required column '{col}' not found for build_sequences_for_multitask.")
+
+    for pid, group in meta.groupby("PatientID"):
+        group = group.sort_values(by="EventDate").reset_index(drop=True)
+        
+        feature_sequences = list(group[feature_col])
+        classification_labels = list(group[classification_target_col])
+        tte_values = list(group[tte_time_col])
+        cox_event_indicators = list(group[tte_event_col])  # update
+        event_dates = list(group["EventDate"])
+        ckd_stages = list(group["CKD_stage_clean"])
+
+        for k in range(len(group)):
+            context_end_idx = k + 1
+            context_start_idx = max(0, k - window_size + 1)
+            context = feature_sequences[context_start_idx : context_end_idx]
+            
+            classification_target = classification_labels[k]
+            time_for_tte = tte_values[k]
+            cox_event = cox_event_indicators[k]  # update
+            
+            if not context: continue
+            # record[5] is cox event indicator
+            data_records.append((
+                context, 
+                classification_target, 
+                pid, 
+                k, 
+                time_for_tte, 
+                cox_event, # update
+                event_dates[k], 
+                ckd_stages[k]
+                ))
+
+    return data_records
+
 def prepare_sklearn_data(sequence_records, window_size, embed_dim, for_survival=False):
     X_list, y_cls_list, pids_list, local_indices_list = [], [], [], []
     # added
@@ -832,14 +886,17 @@ def main():
     train_sequences_surv = build_sequences_for_multitask(train_metadata, args.window_size, 
                                                           classification_target_col='label_ckd_1_year_future',
                                                           tte_time_col='time_until_progression',
+                                                          tte_event_col='event_for_cox_indicator',
                                                           feature_col='embedding')
     val_sequences_surv = build_sequences_for_multitask(val_metadata, args.window_size,
                                                         classification_target_col='label_ckd_1_year_future',
                                                         tte_time_col='time_until_progression',
+                                                        tte_event_col='event_for_cox_indicator',                                                        
                                                         feature_col='embedding')
     test_sequences_surv = build_sequences_for_multitask(test_metadata, args.window_size,
                                                          classification_target_col='label_ckd_1_year_future',
                                                          tte_time_col='time_until_progression',
+                                                         tte_event_col='event_for_cox_indicator',
                                                          feature_col='embedding')
 
     # modified for date, stage output
