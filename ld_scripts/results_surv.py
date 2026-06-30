@@ -341,7 +341,6 @@ def evaluate_model_fullsample_2(df, eval_day, bootstrap=False, random_state=None
 
     # return c_index, auc_365, brier_365
     return {"AUC@365": auc_365, "C-index": float(c_index), "brier_score": brier_365}
-    
 def evaluate_model_fullsample(df, eval_day):
     """
     Compute C-index, time-dependent AUC@eval_day, and IPCW Brier@eval_day
@@ -351,18 +350,13 @@ def evaluate_model_fullsample(df, eval_day):
     T = df['tte_cox_true_time'].values
     E = df['tte_cox_true_event'].astype(bool).values
     R = df['tte_cox_risk_score'].values
-    print(df.head())
-    
-    # surv = Surv.from_arrays(E, T)
+    # print(df.head())
+
     surv, risks = create_surv_object(df)
 
-    from scipy.special import expit
-    surv_probs = 1 - expit(R)
     # Concordance
     try:
         c_index = concordance_index_ipcw(surv, surv, R)[0]
-
-        # c_index = concordance_index(T, -R, event_observed=E)
     except Exception:
         c_index = np.nan
 
@@ -370,23 +364,22 @@ def evaluate_model_fullsample(df, eval_day):
     try:
         _, auc_vals = cumulative_dynamic_auc(surv, surv, risks, eval_day)
         auc_365 = float(auc_vals[0]) if isinstance(auc_vals, (list, np.ndarray)) else float(auc_vals)
-    
-        # _, auc_vals = cumulative_dynamic_auc(
-        #     survival_train=surv,
-        #     survival_test=surv,
-        #     estimate=R,
-        #     times=np.array([eval_day])
-        # )
-        # auc_365 = float(auc_vals) 
     except Exception:
         auc_365 = np.nan
-    
 
-    # IPCW-weighted Brier score
+    # IPCW-weighted Brier score — now uses cl_prob_1, matching pt2
     try:
+        if 'cl_prob_1' not in df.columns:
+            print(df.columns)
+            raise ValueError("cl_prob_1 column not found; cannot compute Brier score consistently with pt2")
+
+        df_brier = df.dropna(subset=['cl_prob_1'])
+        surv_brier, _ = create_surv_object(df_brier)
+        surv_probs = 1 - df_brier['cl_prob_1'].values  # survival probability, same convention as pt2
+
         _, brier_vals = brier_score(
             survival_train=surv,
-            survival_test=surv,
+            survival_test=surv_brier,
             estimate=surv_probs,
             times=np.array([eval_day])
         )
@@ -395,8 +388,6 @@ def evaluate_model_fullsample(df, eval_day):
     except Exception:
         brier_365 = np.nan
 
-    
-    # return c_index, auc_365, brier_365
     return {"AUC@365": auc_365, "C-index": float(c_index), "brier_score": brier_365}
 
 def plot_risk_distribution(df, model_name):
@@ -539,15 +530,11 @@ def evaluate_models_pt3(filepaths, EVAL_DAY=365, n_boot=1000, n_workers=8,
         # use the same timepoints across all models
         print(test_df.columns)
         print(df_full.columns)
+
         merged = (
-            # df_full.merge(
-            #     test_df[['PatientID', 'tte_cox_true_time']],
-            #     on=['PatientID', 'tte_cox_true_time'],
-            #     how='inner'
-            # )
             test_df[['PatientID', 'tte_cox_true_time', 'tte_cox_true_event']]
             .merge(
-                df_full[['PatientID', 'tte_cox_true_time', 'tte_cox_risk_score']],
+                df_full[['PatientID', 'tte_cox_true_time', 'tte_cox_risk_score', 'cl_prob_1']],
                 on=['PatientID', 'tte_cox_true_time'],
                 how='inner'
             )
