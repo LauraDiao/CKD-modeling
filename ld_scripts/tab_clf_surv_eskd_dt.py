@@ -40,7 +40,7 @@ sys.argv=['']
 print("test")
 #%%
 
-subset = True
+subset = False
 if not subset: 
     # print(f"cuda:{str(cuda_num)}")
     tab_path = f"./tabular_full/processed_tab_eskd.csv"    
@@ -573,7 +573,7 @@ def train_and_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_
 
     logger.info(f"{model_name}: Trained for specified number of estimators/iterations.")
     
-    model_path = f"{args.output_model_prefix}_{model_name}.joblib"
+    model_path = f"./joblib_files/{args.output_model_prefix}_{model_name}.joblib"
     joblib.dump(model, model_path)
     logger.info(f"{model_name}: Model saved to {model_path}")
 
@@ -584,9 +584,9 @@ def train_and_evaluate_classifier(model, model_name, X_train, y_train, X_val, y_
     if len(y_test_cls) > 0:
         prevalence = np.mean(y_test_cls)
         logger.info(f"{model_name} Test Prevalence ({args.prediction_horizon_days}-day future label): {prevalence:.4f}")
-        # threshold = prevalence if 0 < prevalence < 1 else 0.5
-        # according to eskd model
-        threshold=0.001688
+        # update 
+        print("prevalence: ", prevalence)
+        threshold = prevalence if 0 < prevalence < 1 else 0.5
 
         metrics_raw = compute_metrics_at_threshold(y_test_cls, y_probs_test, threshold)
         metrics_ci = bootstrap_metrics(y_test_cls, y_probs_test, threshold, random_state=args.random_seed)
@@ -660,7 +660,7 @@ def train_and_evaluate_xgboost_survival(model, model_name, X_train_s, y_train_ti
     
     logger.info(f"{model_name}: Trained for specified number of estimators.")
 
-    model_path = f"{args.output_model_prefix}_{model_name}.joblib"
+    model_path = f"./joblib_files/{args.output_model_prefix}_{model_name}.joblib"
     joblib.dump(model, model_path)
     logger.info(f"{model_name}: Survival model saved to {model_path}")
 
@@ -917,29 +917,31 @@ def main():
 
     all_results = []
     trained_classification_models = {} 
-    # --- XGBoost Classifier ---
-    # xgb_clf = xgb.XGBClassifier(
-    #     n_estimators=args.xgb_n_estimators,
-    #     max_depth=args.xgb_max_depth,
-    #     learning_rate=args.xgb_learning_rate,
-    #     use_label_encoder=False, 
-    #     eval_metric='logloss', 
-    #     random_state=args.random_seed
-    # )
 
-    xgb_params = {
-    'objective': 'binary:logistic',
-    'eval_metric': ['logloss', 'aucpr'],
-    'learning_rate': 0.05,
-    'max_depth': 6,
-    'subsample': 0.8,
-    'colsample_bytree': 0.8,
-    'early_stopping_rounds':50,
-    'n_estimators': 1000,
-    'use_label_encoder': False,
-    # 'base_score':0.5,
-    }
-    xgb_clf = xgb.XGBClassifier(**xgb_params)
+    # --- XGBoost Classifier ---
+    # xgb_params = {
+    # 'objective': 'binary:logistic',
+    # 'eval_metric': ['logloss', 'aucpr'],
+    # 'learning_rate': 0.05,
+    # 'max_depth': 6,
+    # 'subsample': 0.8,
+    # 'colsample_bytree': 0.8,
+    # 'early_stopping_rounds':50,
+    # 'n_estimators': 1000,
+    # 'use_label_encoder': False,
+    # # 'base_score':0.5,
+    # }
+    # xgb_clf = xgb.XGBClassifier(**xgb_params)
+    
+    # update 
+    xgb_clf = xgb.XGBClassifier(
+        objective="binary:logistic",
+        eval_metric=["logloss", "aucpr"],
+        random_state=args.random_seed,
+        n_estimators=args.xgb_n_estimators,
+        max_depth=args.xgb_max_depth,
+        learning_rate=args.xgb_learning_rate,
+    )
     
     results_xgb_cls, trained_xgb_cls = train_and_evaluate_classifier(
         xgb_clf, f"XGBoost_{args.prediction_horizon_days}DayFuture_Classifier",
