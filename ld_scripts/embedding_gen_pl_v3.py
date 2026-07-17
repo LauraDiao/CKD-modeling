@@ -11,6 +11,7 @@ from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 # %%
 # cuda
+
 cuda_num = 2
 print(f"cuda:{str(cuda_num)}")
 # %%

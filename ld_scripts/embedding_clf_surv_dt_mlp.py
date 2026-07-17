@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import sys
 
-device_ids = [0, 1, 2]
+device_ids = [1, 2]
 os_ids = ",".join(map(str, device_ids))
 os.environ["CUDA_VISIBLE_DEVICES"] = os_ids
 visible_indices = list(range(len(device_ids)))
@@ -38,7 +38,7 @@ years = str(round(prediction_period/365))
 window_size = 365
 filtering_stage = True
 output_dir = ""
-version = "_v9"
+version = "_v1"
 
 #%%
 # comment out
@@ -65,7 +65,7 @@ if filtering_stage:
     output_dir += "_stage_filter" # ""
 
 # MLP modifier
-output_dir += "_"
+output_dir += "_mlp"
 
 output_dir += version
 print(output_dir)
@@ -76,7 +76,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler(f"./log_files/full_deepserv_tte_{years}year_future_50_window{output_dir}.log", mode='w'),
+        logging.FileHandler(f"./log_files/mlp_full_deepserv_tte_{years}year_future_50_window{output_dir}.log", mode='w'),
         logging.StreamHandler()
     ]
 )
@@ -305,29 +305,34 @@ class LongitudinalTransformer(nn.Module):
         last_token_features = out[:, -1, :] 
         return self.classifier(last_token_features)
 
+
 class MLPSimple(nn.Module):
     def __init__(self, input_dim, window_size, hidden_dim, num_layers=2, dropout=0.1):
         super().__init__()
-        self.flatten_dim = input_dim * window_size
-        layers = []
-        current_dim = self.flatten_dim
         if num_layers < 1:
             raise ValueError("MLPSimple must have at least one layer.")
+        self.time_proj = nn.Linear(input_dim, hidden_dim)
+        self.proj_act = nn.ReLU()
+
+        self.flatten_dim = hidden_dim * window_size  # e.g. 128 * 365 = 46,720 (was 768*365=280,320)
+        layers = []
+        current_dim = self.flatten_dim
         if num_layers == 1:
-            layers.append(nn.Linear(current_dim, 2)) 
+            layers.append(nn.Linear(current_dim, 2))
         else:
-            for _ in range(num_layers - 1): 
+            for _ in range(num_layers - 1):
                 layers.append(nn.Linear(current_dim, hidden_dim))
                 layers.append(nn.ReLU())
                 layers.append(nn.Dropout(dropout))
                 current_dim = hidden_dim
-            layers.append(nn.Linear(current_dim, 2)) 
+            layers.append(nn.Linear(current_dim, 2))
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x): 
-        x = x.view(x.size(0), -1) 
+    def forward(self, x):
+        # x: (batch, window_size, input_dim)
+        x = self.proj_act(self.time_proj(x))   # (batch, window_size, hidden_dim)
+        x = x.reshape(x.size(0), -1)           # (batch, window_size * hidden_dim)
         return self.net(x)
-
 
 class TemporalBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride, dilation, padding, dropout=0.2):
@@ -462,36 +467,34 @@ class DeepSurvTransformer(nn.Module):
         risk_pred = self.risk(last_token_features).squeeze(-1)
         classification_logits = self.classifier(last_token_features)
         return classification_logits, risk_pred
-
 class DeepSurvMLP(nn.Module):
     def __init__(self, input_dim, window_size, hidden_dim, num_layers=2, dropout=0.1):
         super().__init__()
-        self.flatten_dim = input_dim * window_size
-        
+        if num_layers < 1:
+            raise ValueError("DeepSurvMLP must have at least one effective layer.")
+
+        self.time_proj = nn.Linear(input_dim, hidden_dim)
+        self.proj_act = nn.ReLU()
+
+        self.flatten_dim = hidden_dim * window_size
+
         shared_layers = []
         current_dim = self.flatten_dim
-        if num_layers < 1: raise ValueError("DeepSurvMLP must have at least one effective layer in shared part if num_layers > 0 for shared.")
-
-        if num_layers > 0: 
-            for i in range(num_layers):
-                out_feat_shared = hidden_dim
-                shared_layers.append(nn.Linear(current_dim, out_feat_shared))
-                shared_layers.append(nn.ReLU())
-                shared_layers.append(nn.Dropout(dropout))
-                current_dim = out_feat_shared
-            self.shared_net = nn.Sequential(*shared_layers)
-            feature_dim_for_heads = hidden_dim
-        else: 
-            self.shared_net = nn.Identity() 
-            feature_dim_for_heads = self.flatten_dim
-
+        for i in range(num_layers):
+            shared_layers.append(nn.Linear(current_dim, hidden_dim))
+            shared_layers.append(nn.ReLU())
+            shared_layers.append(nn.Dropout(dropout))
+            current_dim = hidden_dim
+        self.shared_net = nn.Sequential(*shared_layers)
+        feature_dim_for_heads = hidden_dim
 
         self.risk = nn.Linear(feature_dim_for_heads, 1)
         self.classifier = nn.Linear(feature_dim_for_heads, 2)
 
     def forward(self, x):
-        x = x.view(x.size(0), -1) 
-        features = self.shared_net(x) 
+        x = self.proj_act(self.time_proj(x))   # (batch, window_size, hidden_dim)
+        x = x.reshape(x.size(0), -1)           # (batch, window_size * hidden_dim)
+        features = self.shared_net(x)
 
         risk_pred = self.risk(features).squeeze(-1)
         classification_logits = self.classifier(features)

@@ -792,6 +792,7 @@ def main():
     # Feature Selection: Use all columns except identifiers, raw date/stage, and created labels/TTE info
     exclude_cols = ['PatientID', 'EventDate', 'CKD_stage', # Raw stage column
                     'CKD_stage_clean', # Intermediate cleaned stage
+                    'CKD_stage_numeric',
                     'label_ckd_stage_4_plus', f'label_ckd_{years}_year_future', # Generated labels
                     'time_until_progression', 'event_for_cox_indicator'] # Generated TTE info
     
