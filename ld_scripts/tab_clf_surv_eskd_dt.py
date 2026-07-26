@@ -43,7 +43,7 @@ print("test")
 subset = False
 if not subset: 
     # print(f"cuda:{str(cuda_num)}")
-    tab_path = f"./tabular_full/processed_tab_eskd.csv"    
+    tab_path = f"./tabular_full/processed_tab_eskd_v4.csv"    
     output_dir += "_full"
 if subset: 
     # print(f"cuda:{str(cuda_num)}")
@@ -57,7 +57,7 @@ if filtering_stage:
 baseline = '_eskd'
 output_dir += baseline
 
-version = '_v2'
+version = '_v4'
 output_dir += version
 print(output_dir)
 
@@ -757,8 +757,8 @@ def main():
         return
 
     # CKD Stage Cleaning (as in original tabular script, adapted)
-    if 'CKD_stage' in metadata.columns:
-        metadata['CKD_stage_clean'] = metadata['CKD_stage'].apply(clean_ckd_stage)
+    if 'CKD_stage_numeric' in metadata.columns:
+        metadata['CKD_stage_clean'] = metadata['CKD_stage_numeric'].apply(clean_ckd_stage)
         # Fill missing stages within a patient's record
         metadata['CKD_stage_clean'] = metadata.groupby('PatientID')['CKD_stage_clean'].bfill().ffill()
         metadata = metadata.dropna(subset=['CKD_stage_clean']) # Remove patients with no stage info
