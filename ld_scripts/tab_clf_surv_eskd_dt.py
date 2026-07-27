@@ -40,14 +40,14 @@ sys.argv=['']
 print("test")
 #%%
 
-subset = True
+subset = False
 if not subset: 
     # print(f"cuda:{str(cuda_num)}")
     tab_path = f"./tabular_full/processed_tab_eskd_v5.csv"    
     output_dir += "_full"
 if subset: 
     # print(f"cuda:{str(cuda_num)}")
-    size = "10000" # 10, 100, full 
+    size = "1000" # 10, 100, full 
     tab_path = f"./tabular_subset_{size}/processed_tab_eskd_v5.csv"
     output_dir += f"_subset_{size}"
 
@@ -808,18 +808,24 @@ def main():
     if 'ICD_combined' in metadata.columns: # Example if it was a target or identifier
          exclude_cols.append('ICD_combined')
 # %%
-    potential_feature_cols = metadata.columns.difference(exclude_cols)
-    # print(potential_feature_cols)
-    # feature_cols = [col for col in potential_feature_cols if metadata[col].dtype in [np.number, 'bool']] # Keep only numeric/boolean
-    # print(feature_cols)
-    # print(metadata[potential_feature_cols].dtypes)
-    # print(metadata[potential_feature_cols].head())
-    # for i in potential_feature_cols:
-    #     print(i)
-    #     print(metadata[i].unique())
+    feature_cols = []
+    for c in potential_feature_cols:
+        if metadata[c].dtype.kind in 'biufc':  # bool/int/uint/float/complex
+            feature_cols.append(c)
+            continue
 
-    #%%
-    feature_cols = potential_feature_cols.values
+        coerced = pd.to_numeric(metadata[c], errors='coerce')
+        n_bad = coerced.isna().sum() - metadata[c].isna().sum()  # newly-NaN, not originally-NaN
+        if coerced.notna().any():
+            logger.warning(
+                f"Column {c} (dtype={metadata[c].dtype}) coerced to numeric; "
+                f"{n_bad} of {len(coerced)} values could not be parsed and became NaN."
+            )
+            metadata[c] = coerced
+            feature_cols.append(c)
+        else:
+            logger.warning(f"Dropping column {c}: no valid numeric values after coercion.")
+            
     # Convert boolean columns to int (0 or 1)
     for col in feature_cols:
         if metadata[col].dtype == 'bool':
