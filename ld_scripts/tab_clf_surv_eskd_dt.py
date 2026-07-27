@@ -66,7 +66,7 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s: %(message)s',
     datefmt='%H:%M:%S',
     handlers=[
-        logging.FileHandler(f"./log_files/xgboost_only_model_tte_{years}year_future.log", mode='w'), # Updated log file name
+        logging.FileHandler(f"./log_files/xgboost_only_model_tte_{years}year_future{version}.log", mode='w'), # Updated log file name
         logging.StreamHandler()
     ]
 )
