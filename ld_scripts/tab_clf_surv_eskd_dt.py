@@ -43,7 +43,7 @@ print("test")
 subset = False
 if not subset: 
     # print(f"cuda:{str(cuda_num)}")
-    tab_path = f"./tabular_full/processed_tab_eskd_v5.csv"    
+    tab_path = f"./tabular_full/processed_tab_eskd_v7.csv"    
     output_dir += "_full"
 if subset: 
     # print(f"cuda:{str(cuda_num)}")
@@ -57,7 +57,7 @@ if filtering_stage:
 baseline = '_eskd'
 output_dir += baseline
 
-version = '_v5'
+version = '_v7'
 output_dir += version
 print(output_dir)
 
@@ -796,9 +796,7 @@ def main():
                     'CKD_stage', # Raw stage column
                     'CKD_stage_clean', # Intermediate cleaned stage
                     'CKD_stage_numeric',
-                    # 'CKD_stage_numeric_right'
                     'max_stage',
-                    # 'max_stage_right'
                     "META_1",
                     'label_ckd_stage_4_plus', f'label_ckd_{years}_year_future', # Generated labels
                     'time_until_progression', 'event_for_cox_indicator'] # Generated TTE info
@@ -808,23 +806,19 @@ def main():
     if 'ICD_combined' in metadata.columns: # Example if it was a target or identifier
          exclude_cols.append('ICD_combined')
 # %%
-    feature_cols = []
-    for c in potential_feature_cols:
-        if metadata[c].dtype.kind in 'biufc':  # bool/int/uint/float/complex
-            feature_cols.append(c)
-            continue
+    potential_feature_cols = metadata.columns.difference(exclude_cols)
+    # print(potential_feature_cols)
+    # read csv transforms the float to string (non numeric)
+    # feature_cols = [col for col in potential_feature_cols if metadata[col].dtype in [np.number, 'bool']] # Keep only numeric/boolean
+    # print(feature_cols)
+    # print(metadata[potential_feature_cols].dtypes)
+    # print(metadata[potential_feature_cols].head())
+    # for i in potential_feature_cols:
+    #     print(i)
+    #     print(metadata[i].unique())
 
-        coerced = pd.to_numeric(metadata[c], errors='coerce')
-        n_bad = coerced.isna().sum() - metadata[c].isna().sum()  # newly-NaN, not originally-NaN
-        if coerced.notna().any():
-            logger.warning(
-                f"Column {c} (dtype={metadata[c].dtype}) coerced to numeric; "
-                f"{n_bad} of {len(coerced)} values could not be parsed and became NaN."
-            )
-            metadata[c] = coerced
-            feature_cols.append(c)
-        else:
-            logger.warning(f"Dropping column {c}: no valid numeric values after coercion.")
+    #%%
+    feature_cols = potential_feature_cols.values
             
     # Convert boolean columns to int (0 or 1)
     for col in feature_cols:
@@ -967,60 +961,52 @@ def main():
     trained_classification_models["XGBoost_Classifier"] = trained_xgb_cls
 
     # --- Survival Models ---
-    X_train_s, y_train_time_s, y_train_event_s = X_train[train_survival_mask], y_train_time[train_survival_mask], y_train_event[train_survival_mask]
-    X_val_s, y_val_time_s, y_val_event_s = X_val[val_survival_mask], y_val_time[val_survival_mask], y_val_event[val_survival_mask] 
-    X_test_s, y_test_time_s, y_test_event_s = X_test[test_survival_mask], y_test_time[test_survival_mask], y_test_event[test_survival_mask]
-    pids_test_s = [p for i, p in enumerate(pids_test) if test_survival_mask[i]]
-    local_indices_test_s = [idx for i, idx in enumerate(local_indices_test) if test_survival_mask[i]]
-    # added for survival
-    dates_test_s = [d for i, d in enumerate(dates_test) if test_survival_mask[i]]
-    # added
-    stages_test_s = [s for i, s in enumerate(stages_test) if test_survival_mask[i]]
-    # change
-    #  true classification labels for the test set (before the survival mask is applied)
-    y_test_cls_s = y_test_cls[test_survival_mask]
+    # X_train_s, y_train_time_s, y_train_event_s = X_train[train_survival_mask], y_train_time[train_survival_mask], y_train_event[train_survival_mask]
+    # X_val_s, y_val_time_s, y_val_event_s = X_val[val_survival_mask], y_val_time[val_survival_mask], y_val_event[val_survival_mask] 
+    # X_test_s, y_test_time_s, y_test_event_s = X_test[test_survival_mask], y_test_time[test_survival_mask], y_test_event[test_survival_mask]
+    # pids_test_s = [p for i, p in enumerate(pids_test) if test_survival_mask[i]]
+    # local_indices_test_s = [idx for i, idx in enumerate(local_indices_test) if test_survival_mask[i]]
+    # # added for survival
+    # dates_test_s = [d for i, d in enumerate(dates_test) if test_survival_mask[i]]
+    # # added
+    # stages_test_s = [s for i, s in enumerate(stages_test) if test_survival_mask[i]]
+    # # change
+    # #  true classification labels for the test set (before the survival mask is applied)
+    # y_test_cls_s = y_test_cls[test_survival_mask]
 
-    # --- XGBoost Survival Model ---
-    if X_train_s.shape[0] > 0 and X_test_s.shape[0] > 0: 
-        # xgb_surv = xgb.XGBModel( 
-        #     n_estimators=args.xgb_n_estimators,
-        #     max_depth=args.xgb_max_depth,
-        #     learning_rate=args.xgb_learning_rate,
-        #     objective='survival:cox',
-        #     # eval_metric='cox-nloglik', # leave out 
-        #     random_state=args.random_seed,
-        # )
+    # # --- XGBoost Survival Model ---
+    # if X_train_s.shape[0] > 0 and X_test_s.shape[0] > 0: 
 
-        xgb_params = {
-            'objective': 'survival:cox',
-            'tree_method': 'hist',       # Highly recommended for speed/memory
-            'learning_rate': 0.05,
-            'max_depth': 6,
-            'n_estimators': 1000,
-            'eval_metric': 'cox-nloglik', # CRITICAL: Metric for survival
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'early_stopping_rounds': 50
-        }
+    #     xgb_params = {
+    #         'objective': 'survival:cox',
+    #         'tree_method': 'hist',       # Highly recommended for speed/memory
+    #         'learning_rate': 0.05,
+    #         'max_depth': 6,
+    #         'n_estimators': 1000,
+    #         'eval_metric': 'cox-nloglik', # CRITICAL: Metric for survival
+    #         'subsample': 0.8,
+    #         'colsample_bytree': 0.8,
+    #         'early_stopping_rounds': 50
+    #     }
 
-        # Use XGBRegressor for survival tasks
-        xgb_surv = xgb.XGBRegressor(**xgb_params)
+    #     # Use XGBRegressor for survival tasks
+    #     xgb_surv = xgb.XGBRegressor(**xgb_params)
 
-        results_xgb_surv = train_and_evaluate_xgboost_survival(
-            xgb_surv, f"XGBoost_TTE_Survival",
-            X_train_s, y_train_time_s, y_train_event_s,
-            X_val_s if X_val_s.shape[0] > 0 else None, 
-            y_val_time_s if X_val_s.shape[0] > 0 else None, 
-            y_val_event_s if X_val_s.shape[0] > 0 else None,
-            X_test_s, y_test_time_s, y_test_event_s,
-            pids_test_s, local_indices_test_s,
-            dates_test_s, stages_test_s,
-            y_test_cls_s,
-            args
-        )
-        all_results.append(results_xgb_surv)
-    else:
-        logger.warning("Skipping XGBoost Survival model training due to insufficient valid survival data.")
+    #     results_xgb_surv = train_and_evaluate_xgboost_survival(
+    #         xgb_surv, f"XGBoost_TTE_Survival",
+    #         X_train_s, y_train_time_s, y_train_event_s,
+    #         X_val_s if X_val_s.shape[0] > 0 else None, 
+    #         y_val_time_s if X_val_s.shape[0] > 0 else None, 
+    #         y_val_event_s if X_val_s.shape[0] > 0 else None,
+    #         X_test_s, y_test_time_s, y_test_event_s,
+    #         pids_test_s, local_indices_test_s,
+    #         dates_test_s, stages_test_s,
+    #         y_test_cls_s,
+    #         args
+    #     )
+    #     all_results.append(results_xgb_surv)
+    # else:
+    #     logger.warning("Skipping XGBoost Survival model training due to insufficient valid survival data.")
 
     # Removed LightGBM Survival model training section
 
