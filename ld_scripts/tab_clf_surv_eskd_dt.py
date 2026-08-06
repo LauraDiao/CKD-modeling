@@ -40,10 +40,11 @@ sys.argv=['']
 print("test")
 #%%
 
+version = '_v7'
 subset = False
 if not subset: 
     # print(f"cuda:{str(cuda_num)}")
-    tab_path = f"./tabular_full/processed_tab_eskd_v7.csv"    
+    tab_path = f"./tabular_full/processed_tab_eskd{version}.csv"    
     output_dir += "_full"
 if subset: 
     # print(f"cuda:{str(cuda_num)}")
@@ -57,7 +58,6 @@ if filtering_stage:
 baseline = '_eskd'
 output_dir += baseline
 
-version = '_v7'
 output_dir += version
 print(output_dir)
 
